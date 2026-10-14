@@ -1,6 +1,6 @@
 /** e-SAJ — consulta completa de jurisprudência (cjsg) dos TJs sem captcha: TJAL e TJAC. */
 import type { Documento } from "../db.js";
-import { dataBr, dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, dataBr, dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 export const PORTAIS_ESAJ: Record<string, string> = {
   TJAL: "https://www2.tjal.jus.br",
@@ -32,7 +32,7 @@ export function lerResultadosEsaj(html: string, tribunal: string, host: string, 
       relator: campo("Relator\\(a\\)"),
       data_julgamento: dataPlausivel(dataIso(campo("Data do julgamento"))),
       data_publicacao: dataPlausivel(dataIso(campo("Data de publicação") ?? campo("Data de registro"))),
-      autoridade: /pleno|especial|se[çc][ãa]o/i.test(orgao ?? "") ? "C" : "D",
+      autoridade: autoridadePorOrgao(orgao),
       situacao: null,
       titulo: `Acórdão ${tribunal} — ${classe || "Processo"} ${processo ?? ""}${orgao ? ` — ${orgao}` : ""}`.trim(),
       ementa: ementa.replace(/\s*\(Número do Processo:[\s\S]*$/, ""),

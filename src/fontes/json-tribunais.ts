@@ -1,13 +1,13 @@
 /** Tribunais com API JSON pública: TJBA (GraphQL), TJES (Solr) e TRF5 (Júlia). */
 import type { Documento } from "../db.js";
-import { cortar, dataIso, dataPlausivel, idEstavel, limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, cortar, dataIso, dataPlausivel, idEstavel, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 const cnj = (n: string | null | undefined) => {
   const d = (n ?? "").replace(/\D/g, "");
   return d.length === 20 ? `${d.slice(0, 7)}-${d.slice(7, 9)}.${d.slice(9, 13)}.${d[13]}.${d.slice(14, 16)}.${d.slice(16)}` : n || null;
 };
 
-const autoridadeOrgao = (orgao: string | null) => (/pleno|especial|se[çc][ãa]o|uniformiza/i.test(orgao ?? "") ? "C" : "D");
+const autoridadeOrgao = autoridadePorOrgao;
 
 // ---------- TJBA ----------
 const GQL_TJBA = `query filter($decisaoFilter: DecisaoFilter!,$pageNumber: Int!,$itemsPerPage: Int!){filter(decisaoFilter:$decisaoFilter,pageNumber:$pageNumber,itemsPerPage:$itemsPerPage){decisoes{dataPublicacao relator{nome} orgaoJulgador{nome} classe{descricao} tipoDecisao ementa hash numeroProcesso} itemCount}}`;

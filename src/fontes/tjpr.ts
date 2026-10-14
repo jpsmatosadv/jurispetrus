@@ -1,6 +1,6 @@
 /** TJPR — pesquisa pública de jurisprudência (portal.tjpr.jus.br). */
 import type { Documento } from "../db.js";
-import { dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 const BASE = "https://portal.tjpr.jus.br";
 
@@ -28,7 +28,7 @@ export function lerResultadosTjpr(html: string, agora: string): Documento[] {
       relator,
       data_julgamento: data,
       data_publicacao: null,
-      autoridade: monocratica ? "E" : /[óo]rg[ãa]o especial|se[çc][ãa]o|pleno/i.test(orgao ?? "") ? "C" : "D",
+      autoridade: monocratica ? "E" : autoridadePorOrgao(orgao),
       situacao: null,
       titulo: `${tipo} TJPR — ${processo ?? id}${orgao ? ` — ${orgao}` : ""}`,
       ementa,

@@ -50,6 +50,7 @@ const DUPLICADAS_STJ = new Set(["RR", "IAC", "SIRDR", "PUIL", "CT"]);
 
 /** "TRF01" → "TRF1", "TRT02" → "TRT2"; demais siglas ficam iguais. */
 export function siglaTribunal(orgao: string): string {
+  if (orgao === "TJDF") return "TJDFT";
   return orgao.replace(/^(TRF|TRT)0*(\d+)$/, "$1$2").replace("_", "-");
 }
 
@@ -66,7 +67,7 @@ export function mapearPrecedente(p: Record<string, any>, agora = new Date().toIS
   let tese = limparHtml(p.tese);
   if (semConteudo(tese)) tese = null;
   // Nas súmulas, o enunciado vem em 'questao' ou em 'tese', conforme o tribunal.
-  const ehSumula = p.tipo === "SV" || p.tipo === "SUM" || p.tipo === "OJ" || p.tipo === "PN" || p.tipo === "ENU";
+  const ehSumula = ["SV", "SUM", "OJ", "PN", "ENU"].includes(p.tipo);
   if (ehSumula && !tese && !semConteudo(questao)) tese = questao;
 
   const ementa = limparHtml(p.textoEmenta) ?? (ehSumula ? null : semConteudo(questao) ? null : questao);

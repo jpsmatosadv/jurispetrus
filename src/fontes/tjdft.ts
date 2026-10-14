@@ -1,6 +1,6 @@
 /** TJDFT — API pública de jurisprudência (jurisdf.tjdft.jus.br). */
 import type { Documento } from "../db.js";
-import { dataIso, limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, dataIso, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 const API = "https://jurisdf.tjdft.jus.br/api/v1/pesquisa";
 
@@ -20,7 +20,7 @@ export function mapearTjdft(r: Record<string, any>, agora: string): Documento | 
     relator: r.nomeRelator ?? null,
     data_julgamento: dataIso(r.dataJulgamento),
     data_publicacao: dataIso(r.dataPublicacao),
-    autoridade: sumula ? "C" : /especial|pleno|c[âa]mara/i.test(orgao ?? "") ? "C" : "D",
+    autoridade: sumula ? "C" : autoridadePorOrgao(orgao),
     situacao: null,
     titulo: sumula
       ? `Súmula ${r.numero ?? r.identificador}/TJDFT`

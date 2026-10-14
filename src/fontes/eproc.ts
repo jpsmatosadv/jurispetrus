@@ -3,7 +3,7 @@
  * (TRF4, TRF2, TJSC, TJRJ e TJSP no 2º grau eletrônico).
  */
 import type { Documento } from "../db.js";
-import { dataBr, dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, dataBr, dataIso, dataPlausivel, idEstavel, lerTexto, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 export const PORTAIS_EPROC: Record<string, string> = {
   TRF4: "https://jurisprudencia.trf4.jus.br/eproc2trf4",
@@ -57,7 +57,7 @@ export function lerResultadosEproc(html: string, tribunal: string, base: string,
       relator,
       data_julgamento: dataPlausivel(dataIso(c.get("DATA DO JULGAMENTO") ?? c.get("DATA DA DECISAO"))),
       data_publicacao: dataPlausivel(dataIso(c.get("DATA DA PUBLICACAO"))),
-      autoridade: monocratica ? "E" : /especial|pleno|grupo|se[çc][ãa]o|uniformiza/i.test(orgao ?? "") ? "C" : "D",
+      autoridade: monocratica ? "E" : autoridadePorOrgao(orgao),
       situacao: null,
       titulo: `${tipoDecisao} ${tribunal} — ${classe ?? "Processo"} ${processo ?? ""}${orgao ? ` — ${orgao}` : ""}`.trim(),
       ementa,

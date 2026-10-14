@@ -7,7 +7,7 @@ import { mapearCarf, escaparLucene } from "../src/fontes/carf.js";
 import { mapearTcu } from "../src/fontes/tcu.js";
 import { mapearRegistroTst } from "../src/fontes/tst.js";
 import { expandirTribunais } from "../src/federado.js";
-import { limparHtml } from "../src/fontes/tipos.js";
+import { autoridadePorOrgao, limparHtml } from "../src/fontes/tipos.js";
 
 const agora = "2026-10-14T00:00:00Z";
 
@@ -87,4 +87,13 @@ test("expandirTribunais entende atalhos de grupo", () => {
 
 test("limparHtml decodifica entidades e remove marcação", () => {
   assert.equal(limparHtml("A&ccedil;&atilde;o <b>de</b>&nbsp;cobran&ccedil;a"), "Ação de cobrança");
+});
+
+test("autoridadePorOrgao separa órgãos de cúpula de turmas especializadas", () => {
+  assert.equal(autoridadePorOrgao("2ª TURMA ESPECIALIZADA"), "D");
+  assert.equal(autoridadePorOrgao("2ª Câmara Especial de Enfrentamento de Acervos"), "D");
+  assert.equal(autoridadePorOrgao("Corte Especial"), "C");
+  assert.equal(autoridadePorOrgao("Órgão Especial"), "C");
+  assert.equal(autoridadePorOrgao("Subseção I Especializada em Dissídios Individuais"), "C");
+  assert.equal(autoridadePorOrgao("1ª TURMA/CÂMARA SUPERIOR REC. FISCAIS"), "C");
 });

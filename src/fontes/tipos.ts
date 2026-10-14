@@ -103,3 +103,15 @@ export function dataPlausivel(iso: string | null): string | null {
   if (!iso) return null;
   return iso >= "1950-01-01" && iso <= new Date(Date.now() + 86_400_000).toISOString().slice(0, 10) ? iso : null;
 }
+
+/**
+ * Autoridade pelo órgão julgador: órgãos de cúpula (Pleno, Órgão/Corte Especial, Seções,
+ * Grupos de Câmaras, turmas de uniformização) valem C; os demais colegiados, D.
+ * "Turma Especializada" e "Câmara Especial" não são órgãos de cúpula.
+ */
+export function autoridadePorOrgao(orgao: string | null | undefined): "C" | "D" {
+  const o = (orgao ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  return /\bpleno\b|plenario|orgao especial|corte especial|\bsecao\b|grupo de camaras|uniformiza|\bsdi|\bsbdi|\bsdc\b|dissidios (individuais|coletivos)|camara superior/.test(o)
+    ? "C"
+    : "D";
+}

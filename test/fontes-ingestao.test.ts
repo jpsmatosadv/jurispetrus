@@ -24,6 +24,7 @@ test("BNP: IRDR de TJ é B; sem tese vira E; STJ repetitivo é ignorado (vem do 
   assert.equal(mapearPrecedente({ id: "stj-rr-1", orgao: "STJ", tipo: "RR", nr: 1, tese: "x" }), null);
   assert.equal(mapearPrecedente({ id: "trf01-sum-1", orgao: "TRF01", tipo: "SUM", nr: 1, tese: "y" })!.tribunal, "TRF1");
   assert.equal(siglaTribunal("TRT02"), "TRT2");
+  assert.equal(siglaTribunal("TJDF"), "TJDFT");
 });
 
 test("STF: lê a exportação de repercussão geral e corrige mojibake", () => {

@@ -79,8 +79,10 @@ function idadeEmAnos(data: string | null, hoje = new Date()): number | null {
   return Math.max(0, (hoje.getTime() - t) / (365.25 * 24 * 3600 * 1000));
 }
 
+const CLASSES_EXIBICAO: Record<string, string> = { SV: "Súmula Vinculante", IRR: "Tema IRR", PN: "Precedente Normativo" };
+
 export function identificacao(d: Pick<Documento, "tipo" | "classe" | "numero" | "tribunal" | "titulo">): string {
-  if (d.classe && d.numero) return `${d.classe} ${formatarNumero(d.numero)}/${d.tribunal}`;
+  if (d.classe && d.numero) return `${CLASSES_EXIBICAO[d.classe] ?? d.classe} ${formatarNumero(d.numero)}/${d.tribunal}`;
   return d.titulo;
 }
 

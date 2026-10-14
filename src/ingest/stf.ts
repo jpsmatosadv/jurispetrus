@@ -2,14 +2,12 @@
  * Temas de Repercussão Geral pela exportação oficial do STF (tabela HTML servida como .xls).
  * Complementa o BNP com relator, leading case, datas e a tese na redação do STF.
  */
+import { readFile } from "node:fs/promises";
 import type { Acervo, Documento } from "../db.js";
 import { dataIso, limparHtml } from "../fontes/tipos.js";
 
-const EXPORT =
+export const EXPORT_RG =
   "https://portal.stf.jus.br/jurisprudenciaRepercussao/exportarDados.asp?situacaoAtual=S&tipoComRG=ComRG&tipoSemRG=SemRG&tipoSemRGQC=SemRGQC";
-/** O portal do STF recusa clientes sem User-Agent de navegador. */
-export const UA_NAVEGADOR =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
 /** Corrige células com UTF-8 decodificado duas vezes ("HÃ¡" → "Há"). */
 export function corrigirMojibake(s: string): string {
@@ -63,10 +61,29 @@ export function lerTabelaRg(html: string, agora = new Date().toISOString()): Doc
   return docs;
 }
 
-export async function ingerirRepercussaoGeral(acervo: Acervo, log: (m: string) => void = console.error): Promise<number> {
-  const r = await fetch(EXPORT, { headers: { "User-Agent": UA_NAVEGADOR }, signal: AbortSignal.timeout(180_000) });
-  if (!r.ok) throw new Error(`STF exportação de RG: HTTP ${r.status}`);
-  const docs = lerTabelaRg(await r.text());
+/**
+ * Importa os temas de RG. O portal do STF costuma recusar clientes automatizados; nesse caso,
+ * baixe a planilha no navegador (link em EXPORT_RG) e passe o caminho em `arquivo`.
+ */
+export async function ingerirRepercussaoGeral(
+  acervo: Acervo,
+  opts: { arquivo?: string; log?: (m: string) => void } = {},
+): Promise<number> {
+  const log = opts.log ?? console.error;
+  let html: string;
+  if (opts.arquivo) {
+    html = await readFile(opts.arquivo, "utf8");
+  } else {
+    const r = await fetch(EXPORT_RG, { signal: AbortSignal.timeout(180_000) });
+    if (!r.ok) {
+      throw new Error(
+        `O portal do STF recusou o download automático (HTTP ${r.status}). Baixe a planilha no navegador em\n  ${EXPORT_RG}\n` +
+          "e rode: npm run ingest -- --fonte stf --rg-arquivo caminho/do/arquivo.xls",
+      );
+    }
+    html = await r.text();
+  }
+  const docs = lerTabelaRg(html);
   acervo.salvar(docs);
   acervo.registrarIngestao("stf-repercussao-geral", `export@${new Date().toISOString().slice(0, 10)}`, docs.length);
   log(`+ STF repercussão geral: ${docs.length} temas`);

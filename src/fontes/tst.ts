@@ -3,7 +3,7 @@
  * Acórdãos, súmulas, orientações jurisprudenciais e precedentes normativos.
  */
 import type { Autoridade, Documento } from "../db.js";
-import { limparHtml, type FonteAoVivo } from "./tipos.js";
+import { autoridadePorOrgao, limparHtml, type FonteAoVivo } from "./tipos.js";
 
 const API = "https://jurisprudencia-backend.tst.jus.br/rest";
 
@@ -25,20 +25,23 @@ export function mapearRegistroTst(r: Record<string, any>, agora: string): Docume
     const tese = limparHtml(r.tese);
     if (!tese) return null;
     const situacao = r.situacao?.descricao ?? null;
+    // As OJs têm séries próprias (SDI-1, SDI-2, SDC...) que repetem a numeração.
+    const serie = tipo === "OJ" || tipo === "OJT" ? (r.orgaoJudicante?.sigla as string | undefined)?.replace(/^SDI(\d)$/, "SDI-$1") : undefined;
+    const rotulo = serie ? `${especie.rotulo} ${r.numero} da ${serie}` : `${especie.rotulo} ${r.numero}`;
     return {
-      id: `TST-${tipo}-${r.numero}`,
+      id: ["TST", tipo, serie?.replace("-", ""), r.numero].filter(Boolean).join("-"),
       tribunal: "TST",
       tipo: "sumula",
       classe: especie.classe,
       numero: String(r.numero),
       registro: null,
-      orgao: tipo === "SUM" || tipo === "PN" ? "TRIBUNAL PLENO" : "SDI",
+      orgao: r.orgaoJudicante?.descricao ?? (tipo === "SUM" ? "Tribunal Pleno" : null),
       relator: null,
       data_julgamento: null,
       data_publicacao: r.dtaPublicacao?.slice(0, 10) ?? null,
       autoridade: especie.autoridade,
       situacao: [situacao, limparHtml(r.observacao)].filter(Boolean).join(" — ") || null,
-      titulo: `${especie.rotulo} ${r.numero}/TST — ${limparHtml(r.titulo) ?? ""}`.trim(),
+      titulo: `${rotulo}/TST — ${limparHtml(r.titulo) ?? ""}`.trim(),
       ementa: limparHtml(r.titulo),
       tese,
       inteiro_teor: limparHtml(r.historico),
@@ -71,7 +74,7 @@ export function mapearRegistroTst(r: Record<string, any>, agora: string): Docume
     relator: r.nomRelator ? capitalizar(r.nomRelator).toUpperCase() : null,
     data_julgamento: r.dtaJulgamento?.slice(0, 10) ?? null,
     data_publicacao: r.dtaPublicacao?.slice(0, 10) ?? null,
-    autoridade: /pleno|SDI|SBDI|SDC|[óo]rg[ãa]o especial/i.test(orgao ?? "") ? "C" : "D",
+    autoridade: autoridadePorOrgao(orgao),
     situacao: null,
     titulo: `${r.numFormatado ?? "Acórdão"} — ${orgao ?? "TST"}`,
     ementa,
