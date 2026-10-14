@@ -11,6 +11,25 @@ export interface RelatorioFonte {
   erro?: string;
 }
 
+/**
+ * Expande atalhos de grupo em siglas: ESTADUAIS (TJs), FEDERAIS (TRFs), SUPERIORES, TODOS.
+ * Siglas comuns passam direto (em maiúsculas).
+ */
+export function expandirTribunais(pedidos: string[] | undefined, conhecidos: string[]): string[] | undefined {
+  if (!pedidos?.length) return undefined;
+  const saida = new Set<string>();
+  for (const bruto of pedidos) {
+    const p = bruto.toUpperCase().replace(/\s+/g, "");
+    if (p === "TODOS") conhecidos.forEach((t) => saida.add(t));
+    else if (p === "ESTADUAIS" || p === "TJS") conhecidos.filter((t) => /^TJ/.test(t)).forEach((t) => saida.add(t));
+    else if (p === "FEDERAIS" || p === "TRFS") conhecidos.filter((t) => /^TRF/.test(t)).forEach((t) => saida.add(t));
+    else if (p === "TRABALHISTAS" || p === "TRTS") conhecidos.filter((t) => /^(TRT|TST)/.test(t)).forEach((t) => saida.add(t));
+    else if (p === "SUPERIORES") ["STF", "STJ", "TST", "TSE", "STM"].forEach((t) => saida.add(t));
+    else saida.add(p.replace(/^(TRF|TRT)0+/, "$1"));
+  }
+  return [...saida];
+}
+
 /** Escolhe as fontes ao vivo pertinentes aos tribunais pedidos. */
 export function selecionarFontes(fontes: FonteAoVivo[], tribunais?: string[]): { fonte: FonteAoVivo; tribunais: string[] }[] {
   if (!tribunais?.length) return fontes.filter((f) => f.padrao).map((fonte) => ({ fonte, tribunais: [] }));

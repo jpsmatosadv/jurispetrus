@@ -8,7 +8,7 @@ import { consultarProcesso, cnjValido, formatarCnj } from "./sources/datajud.js"
 import { buscarLegislacao } from "./sources/lexml.js";
 import type { Embedder } from "./embeddings.js";
 import type { FonteAoVivo } from "./fontes/tipos.js";
-import { pesquisarAoVivo, type RelatorioFonte } from "./federado.js";
+import { expandirTribunais, pesquisarAoVivo, type RelatorioFonte } from "./federado.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -19,6 +19,12 @@ Cada documento tem um nível de autoridade:
   D = orientativo (acórdãos de turmas/câmaras)
   E = consulta (temas sem tese firmada, material de apoio)
 Priorize A e B ao fundamentar; trate D como persuasivo.
+
+Cobertura: o acervo indexado traz STF (súmulas, súmulas vinculantes, repercussão geral, controle concentrado),
+STJ (acórdãos, súmulas e repetitivos) e os precedentes qualificados de TST, TNU, TRFs, TJs e TRTs.
+Para jurisprudência comum de um tribunal (TJs, TRFs, TST, CARF, TCU), informe o tribunal em 'tribunais':
+a pesquisa consulta o portal oficial dele em tempo real. Se o usuário pedir "tribunais estaduais", use 'ESTADUAIS'.
+Quando um portal estiver indisponível, diga isso ao usuário em vez de concluir que não há julgados.
 
 Regras de uso:
 - Cite apenas julgados retornados pelas ferramentas, com tribunal, classe/número, órgão, relator, data e link da fonte.
@@ -54,6 +60,14 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     { name: "jurispetrus", title: "JurisPetrus — Jurisprudência Brasileira", version: "0.1.0" },
     { instructions: INSTRUCOES },
   );
+
+  /** Siglas presentes no acervo local ou cobertas por fonte ao vivo. */
+  const tribunaisConhecidos = () => [
+    ...new Set([
+      ...(acervo.db.prepare("SELECT DISTINCT tribunal FROM documentos").all() as { tribunal: string }[]).map((r) => r.tribunal),
+      ...(opts.fontes ?? []).flatMap((f) => f.tribunais),
+    ]),
+  ];
 
   /** Vetor da consulta para a busca semântica; falha silenciosa cai na busca lexical. */
   const vetorDaConsulta = async (consulta: string): Promise<Float32Array | null> => {
@@ -91,7 +105,12 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         tribunais: z
           .array(z.string())
           .optional()
-          .describe("Siglas dos tribunais/órgãos, ex.: ['STJ'], ['TJSP','TJMG'], ['TRF4'], ['CARF'], ['TCU']. Veja listar_fontes."),
+          .describe(
+            "Siglas dos tribunais/órgãos, ex.: ['STJ'], ['TJSP','TJSC'], ['TRF4'], ['CARF'], ['TCU'], ['TST']. " +
+              "Atalhos: 'ESTADUAIS' (todos os TJs), 'FEDERAIS' (TRFs), 'TRABALHISTAS', 'SUPERIORES', 'TODOS'. " +
+              "Sem filtro, a pesquisa usa o acervo indexado (STF, STJ e precedentes qualificados de todos os tribunais); " +
+              "com filtro, consulta também os portais oficiais desses tribunais em tempo real. Veja listar_fontes.",
+          ),
         autoridade_minima: autoridade.optional().describe("Retorna só documentos com autoridade igual ou superior (A é a mais forte)"),
         orgao: z.string().optional().describe("Órgão julgador, ex.: 'TERCEIRA TURMA', 'SEGUNDA SEÇÃO'"),
         relator: z.string().optional().describe("Nome (ou parte) do relator"),
@@ -107,7 +126,8 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, ...args }) => {
+    protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, ...entrada }) => {
+      const args = { ...entrada, tribunais: expandirTribunais(entrada.tribunais, tribunaisConhecidos()) };
       const [fontes, vetorConsulta] = await Promise.all([
         ao_vivo && opts.fontes?.length && (args.pagina ?? 1) === 1
           ? pesquisarAoVivo(acervo, opts.fontes, args, {

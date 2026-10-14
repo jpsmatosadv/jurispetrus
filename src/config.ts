@@ -24,5 +24,5 @@ export const config = {
     chave: process.env.VOYAGE_API_KEY || process.env.JURIS_EMBEDDINGS_KEY || undefined,
   },
   /** Tempo máximo (ms) de espera pelas fontes consultadas ao vivo. */
-  timeoutFontes: Number(process.env.JURIS_TIMEOUT_FONTES ?? 20000),
+  timeoutFontes: Number(process.env.JURIS_TIMEOUT_FONTES ?? 25000),
 };
