@@ -383,7 +383,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
   );
 
   /** Importa sob demanda a norma citada que ainda não está no índice (texto atualizado da Câmara). */
-  const garantirNorma = async (c: CitacaoLegal): Promise<string | undefined> => {
+  const garantirNorma = async (c: CitacaoLegal, prazoMs = 45_000): Promise<string | undefined> => {
     if (normaIndexada(acervo, c.norma)) return undefined;
     const n = c.avulsa ?? CATALOGO.find((x) => x.sigla === c.norma);
     if (!n) return undefined;
@@ -393,11 +393,18 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       importacoes.set(n.sigla, tarefa);
       tarefa.finally(() => importacoes.delete(n.sigla)).catch(() => {});
     }
+    // A importação continua em segundo plano se passar do prazo; a próxima consulta já a encontra.
+    let timer: NodeJS.Timeout | undefined;
+    const prazo = new Promise<"prazo">((ok) => (timer = setTimeout(() => ok("prazo"), prazoMs)));
     try {
-      await tarefa;
-      return `${n.nome} importada agora do texto consolidado.`;
+      const r = await Promise.race([tarefa.then(() => "ok" as const), prazo]);
+      return r === "ok"
+        ? `${n.nome} importada agora do texto consolidado.`
+        : `${n.nome} está sendo importada; repita a consulta em instantes.`;
     } catch (e) {
       return `Não foi possível importar ${n.nome}: ${(e as Error).message}`;
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -532,7 +539,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
           const termosJ = q.termos_jurisprudencia || q.questao;
           const termosL = q.termos_legislacao || q.questao;
           const citacoes = (q.normas_provaveis ?? []).map((n) => interpretarCitacaoLegal(n)).filter((c): c is CitacaoLegal => c !== null);
-          await Promise.all(citacoes.map(garantirNorma));
+          await Promise.all(citacoes.map((c) => garantirNorma(c, 8_000)));
           const citadas = citacoes
             .map(dispositivoCitado)
             .filter((d): d is NonNullable<ReturnType<typeof dispositivoCitado>> => d !== null);
