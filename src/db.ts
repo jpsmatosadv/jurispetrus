@@ -126,16 +126,29 @@ export class Acervo {
   readonly db: DatabaseSync;
   /** Dimensão do índice vetorial, quando existe. */
   private dimensoesVetor: number | null = null;
+  /** A extensão sqlite-vec foi carregada. */
+  vetoresDisponiveis = false;
 
   constructor(caminho: string) {
     if (caminho !== ":memory:") mkdirSync(dirname(caminho), { recursive: true });
-    this.db = new DatabaseSync(caminho, { allowExtension: true });
-    require("sqlite-vec").load(this.db);
+    try {
+      this.db = new DatabaseSync(caminho, { allowExtension: true });
+    } catch {
+      // Node anterior ao 22.13 não conhece allowExtension
+      this.db = new DatabaseSync(caminho);
+    }
+    try {
+      require("sqlite-vec").load(this.db);
+      this.vetoresDisponiveis = true;
+    } catch (e) {
+      // Node sem loadExtension (anterior ao 22.13) ou binário ausente: segue só com a busca textual.
+      console.error(`Índice vetorial indisponível (${(e as Error).message}); busca semântica desativada.`);
+    }
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
     this.db.exec(SCHEMA_LEGISLACAO);
     const meta = this.lerMeta("vetor_dimensoes");
-    if (meta) this.dimensoesVetor = Number(meta);
+    if (meta && this.vetoresDisponiveis) this.dimensoesVetor = Number(meta);
   }
 
   lerMeta(chave: string): string | null {
@@ -152,6 +165,7 @@ export class Acervo {
    * recriar o índice, porque vetores de modelos diferentes não são comparáveis.
    */
   prepararVetores(modeloId: string, dimensoes: number, recriar = false): void {
+    if (!this.vetoresDisponiveis) throw new Error("Busca semântica indisponível: o Node.js em uso não carrega a extensão sqlite-vec (requer 22.13+).");
     const atual = this.lerMeta("vetor_modelo");
     if (atual && atual !== modeloId && !recriar) {
       throw new Error(`O índice vetorial foi criado com '${atual}'. Rode 'npm run vetorizar -- --recriar' para trocar para '${modeloId}'.`);
