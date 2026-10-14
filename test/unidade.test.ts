@@ -97,7 +97,14 @@ test("pesquisar prioriza precedente qualificado e oculta cancelados", () => {
 test("interpretarCitacao reconhece formatos usuais", () => {
   assert.deepEqual(interpretarCitacao("REsp 1.990.285/SP"), { tipo: "processo", classe: "REsp", numero: "1990285" });
   assert.deepEqual(interpretarCitacao("AgInt no AREsp n. 2.123.456/RJ")?.classe, "AgInt no AREsp");
-  assert.deepEqual(interpretarCitacao("Tema Repetitivo 988"), { tipo: "tema", numero: "988", tribunal: "STJ", classe: "Tema" });
+  assert.deepEqual(interpretarCitacao("Tema Repetitivo 988"), { tipo: "precedente", numero: "988", tribunal: "STJ", classe: "Tema" });
+  assert.deepEqual(interpretarCitacao("Súmula Vinculante nº 13"), { tipo: "precedente", classe: "SV", numero: "13", tribunal: "STF" });
+  assert.deepEqual(interpretarCitacao("Súmula 385/STJ"), { tipo: "precedente", classe: "Súmula", numero: "385", tribunal: "STJ" });
+  assert.deepEqual(interpretarCitacao("Súmula nº 331 do TST"), { tipo: "precedente", classe: "Súmula", numero: "331", tribunal: "TST" });
+  assert.deepEqual(interpretarCitacao("Tema 1.046 da Repercussão Geral"), { tipo: "precedente", classe: "Tema", numero: "1046", tribunal: "STF" });
+  assert.deepEqual(interpretarCitacao("Tema 1046/STF"), { tipo: "precedente", classe: "Tema", numero: "1046", tribunal: "STF" });
+  assert.deepEqual(interpretarCitacao("IRDR 62/TJSP"), { tipo: "precedente", classe: "IRDR", numero: "62", tribunal: "TJSP" });
+  assert.deepEqual(interpretarCitacao("ADI 5.766"), { tipo: "precedente", classe: "ADI", numero: "5766", tribunal: "STF" });
   assert.equal(interpretarCitacao("0025207-95.2016.8.19.0208")?.tipo, "cnj");
   assert.equal(interpretarCitacao("conforme a doutrina"), null);
 });
