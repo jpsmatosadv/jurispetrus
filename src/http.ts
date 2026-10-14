@@ -5,6 +5,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { config } from "./config.js";
 import { Acervo } from "./db.js";
 import { criarServidor } from "./server.js";
+import { criarEmbedder, type Embedder } from "./embeddings.js";
+import { FONTES } from "./fontes/index.js";
 
 /** Contador de chamadas por chave e mês, em memória (reinicia junto com o processo). */
 export class Cota {
@@ -34,7 +36,7 @@ export function extrairChave(req: Request): string | null {
   return typeof q === "string" ? q : null;
 }
 
-export function criarApp(acervo: Acervo, opts = config) {
+export function criarApp(acervo: Acervo, opts = config, embedder: Embedder | null = criarEmbedder(opts.embeddings)) {
   const app = createMcpExpressApp({
     host: opts.host,
     allowedHosts: opts.allowedHosts.length ? opts.allowedHosts : undefined,
@@ -64,6 +66,9 @@ export function criarApp(acervo: Acervo, opts = config) {
     const server = criarServidor(acervo, {
       datajudKey: opts.datajudKey,
       antesDeChamar: () => cota.consumir(res.locals.chave),
+      embedder,
+      fontes: FONTES,
+      timeoutFontes: opts.timeoutFontes,
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {

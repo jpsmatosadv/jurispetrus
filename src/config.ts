@@ -15,4 +15,14 @@ export const config = {
   /** Limite de chamadas de ferramenta por chave por mês (0 = ilimitado). */
   cotaMensal: Number(process.env.JURIS_COTA_MENSAL ?? 0),
   datajudKey: process.env.DATAJUD_API_KEY,
+  /** Busca semântica: provedor de embeddings (voyage | openai | nenhum). */
+  embeddings: {
+    provedor: (process.env.JURIS_EMBEDDINGS ?? "nenhum") as "voyage" | "openai" | "nenhum",
+    modelo: process.env.JURIS_EMBEDDINGS_MODEL || undefined,
+    dimensoes: process.env.JURIS_EMBEDDINGS_DIM ? Number(process.env.JURIS_EMBEDDINGS_DIM) : undefined,
+    url: process.env.JURIS_EMBEDDINGS_URL || undefined,
+    chave: process.env.VOYAGE_API_KEY || process.env.JURIS_EMBEDDINGS_KEY || undefined,
+  },
+  /** Tempo máximo (ms) de espera pelas fontes consultadas ao vivo. */
+  timeoutFontes: Number(process.env.JURIS_TIMEOUT_FONTES ?? 20000),
 };

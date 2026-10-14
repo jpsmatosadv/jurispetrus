@@ -6,6 +6,9 @@ import { pesquisar, identificacao } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
 import { consultarProcesso, cnjValido, formatarCnj } from "./sources/datajud.js";
 import { buscarLegislacao } from "./sources/lexml.js";
+import type { Embedder } from "./embeddings.js";
+import type { FonteAoVivo } from "./fontes/tipos.js";
+import { pesquisarAoVivo, type RelatorioFonte } from "./federado.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -39,6 +42,11 @@ export interface OpcoesServidor {
   /** Chamado antes de cada ferramenta; deve lançar erro para bloquear (ex.: cota esgotada). */
   antesDeChamar?: (ferramenta: string) => void;
   fetchImpl?: typeof fetch;
+  /** Provedor de embeddings para a busca semântica (opcional). */
+  embedder?: Embedder | null;
+  /** Conectores consultados ao vivo (tribunais estaduais, TRFs, CARF, TCU...). */
+  fontes?: FonteAoVivo[];
+  timeoutFontes?: number;
 }
 
 export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpServer {
@@ -46,6 +54,17 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     { name: "jurispetrus", title: "JurisPetrus — Jurisprudência Brasileira", version: "0.1.0" },
     { instructions: INSTRUCOES },
   );
+
+  /** Vetor da consulta para a busca semântica; falha silenciosa cai na busca lexical. */
+  const vetorDaConsulta = async (consulta: string): Promise<Float32Array | null> => {
+    if (!opts.embedder || !acervo.temVetores) return null;
+    try {
+      return (await opts.embedder.vetorizar([consulta], "consulta"))[0];
+    } catch (e) {
+      console.error("Falha ao vetorizar consulta:", (e as Error).message);
+      return null;
+    }
+  };
 
   /** Envolve o handler com o controle de cota e tratamento de erros. */
   const protegido =
@@ -69,7 +88,10 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         "Use termos jurídicos do caso (ex.: 'dano moral negativação indevida') e frases entre aspas para expressões exatas.",
       inputSchema: {
         consulta: z.string().min(2).describe("Termos de pesquisa em linguagem jurídica"),
-        tribunais: z.array(z.string()).optional().describe("Siglas dos tribunais, ex.: ['STJ']"),
+        tribunais: z
+          .array(z.string())
+          .optional()
+          .describe("Siglas dos tribunais/órgãos, ex.: ['STJ'], ['TJSP','TJMG'], ['TRF4'], ['CARF'], ['TCU']. Veja listar_fontes."),
         autoridade_minima: autoridade.optional().describe("Retorna só documentos com autoridade igual ou superior (A é a mais forte)"),
         orgao: z.string().optional().describe("Órgão julgador, ex.: 'TERCEIRA TURMA', 'SEGUNDA SEÇÃO'"),
         relator: z.string().optional().describe("Nome (ou parte) do relator"),
@@ -78,18 +100,41 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         incluir_cancelados: z.boolean().optional().describe("Inclui temas cancelados/revisados (padrão: não)"),
         limite: z.number().int().min(1).max(30).optional().describe("Resultados por página (padrão 10)"),
         pagina: z.number().int().min(1).optional(),
+        ao_vivo: z
+          .boolean()
+          .optional()
+          .describe("Consulta também os portais oficiais dos tribunais pedidos em tempo real (padrão: sim)"),
       },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("pesquisar_jurisprudencia", (args) => {
-      const r = pesquisar(acervo, args);
+    protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, ...args }) => {
+      const [fontes, vetorConsulta] = await Promise.all([
+        ao_vivo && opts.fontes?.length && (args.pagina ?? 1) === 1
+          ? pesquisarAoVivo(acervo, opts.fontes, args, {
+              timeoutMs: opts.timeoutFontes ?? 20_000,
+              fetchImpl: opts.fetchImpl,
+              embedder: opts.embedder,
+            })
+          : Promise.resolve([] as RelatorioFonte[]),
+        vetorDaConsulta(args.consulta),
+      ]);
+      const r = pesquisar(acervo, args, { vetorConsulta });
+      const falhas = fontes.filter((f) => f.status !== "ok");
       if (!r.resultados.length) {
         return ok({
           estado: "SEM_RESULTADO",
-          mensagem: "Nenhum julgado no acervo indexado para esses termos e filtros. Não cite julgados que não tenham sido retornados.",
+          mensagem: "Nenhum julgado encontrado para esses termos e filtros. Não cite julgados que não tenham sido retornados.",
+          fontes_consultadas: fontes,
         });
       }
-      return ok({ estado: "ENCONTRADO", ...r });
+      return ok({
+        estado: "ENCONTRADO",
+        ...r,
+        fontes_consultadas: fontes.length ? fontes : undefined,
+        aviso: falhas.length
+          ? `Fontes indisponíveis agora: ${falhas.map((f) => f.tribunais.join("/")).join(", ")}. A pesquisa nelas pode estar incompleta.`
+          : undefined,
+      });
     }),
   );
 
@@ -226,8 +271,9 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     },
     protegido("listar_fontes", () =>
       ok({
-        ...acervo.estatisticas(),
-        consultas_ao_vivo: ["DataJud/CNJ (metadados e movimentações processuais)", "LexML Brasil (legislação)"],
+        acervo_local: acervo.estatisticas(),
+        pesquisa_ao_vivo: (opts.fontes ?? []).map((f) => ({ fonte: f.nome, tribunais: f.tribunais, consultada_por_padrao: f.padrao })),
+        outras_consultas: ["DataJud/CNJ (metadados e movimentações processuais)", "LexML Brasil (legislação)"],
       }),
     ),
   );

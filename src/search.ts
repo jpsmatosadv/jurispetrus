@@ -88,17 +88,17 @@ function formatarNumero(n: string): string {
   return /^\d{4,}$/.test(n) ? Number(n).toLocaleString("pt-BR") : n;
 }
 
-/**
- * Pesquisa com ranqueamento híbrido: relevância textual (BM25) + autoridade do precedente
- * + atualidade do julgamento. Entendimentos cancelados/revisados são penalizados.
- */
-export function pesquisar(acervo: Acervo, f: FiltrosPesquisa): { total_candidatos: number; resultados: ResultadoPesquisa[] } {
-  const fts = montarConsultaFts(f.consulta);
-  if (!fts) return { total_candidatos: 0, resultados: [] };
+interface Candidato {
+  doc: Documento;
+  trecho: string | null;
+  lexical: number;
+  semantica: number;
+}
 
-  const where: string[] = ["documentos_fts MATCH ?"];
-  const params: (string | number)[] = [fts];
-
+/** Cláusulas WHERE comuns às duas vias (lexical e vetorial). */
+function filtrosSql(f: FiltrosPesquisa): { where: string[]; params: (string | number)[] } {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
   if (f.tribunais?.length) {
     where.push(`d.tribunal IN (${f.tribunais.map(() => "?").join(",")})`);
     params.push(...f.tribunais.map((t) => t.toUpperCase()));
@@ -124,33 +124,95 @@ export function pesquisar(acervo: Acervo, f: FiltrosPesquisa): { total_candidato
     where.push("d.data_julgamento <= ?");
     params.push(f.data_fim);
   }
+  return { where, params };
+}
 
+const CANDIDATOS = 300;
+
+function viaLexical(acervo: Acervo, f: FiltrosPesquisa, fts: string, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>) {
   // Pesos das colunas no BM25: titulo, ementa, tese, inteiro_teor, referencias, assuntos
   const sql = `
-    SELECT d.*, bm25(documentos_fts, 4.0, 3.0, 4.0, 1.0, 1.5, 2.0) AS bm25,
-           snippet(documentos_fts, -1, '«', '»', ' … ', 40) AS trecho
+    SELECT d.rowid AS _rowid, d.*, bm25(documentos_fts, 4.0, 3.0, 4.0, 1.0, 1.5, 2.0) AS _bm25,
+           snippet(documentos_fts, -1, '«', '»', ' … ', 40) AS _trecho
     FROM documentos_fts JOIN documentos d ON d.rowid = documentos_fts.rowid
-    WHERE ${where.join(" AND ")}
-    ORDER BY bm25 LIMIT 300`;
-
-  const linhas = acervo.db.prepare(sql).all(...params) as unknown as (Documento & { bm25: number; trecho: string })[];
-  if (linhas.length === 0) return { total_candidatos: 0, resultados: [] };
-
+    WHERE ${["documentos_fts MATCH ?", ...filtros.where].join(" AND ")}
+    ORDER BY _bm25 LIMIT ${CANDIDATOS}`;
+  const linhas = acervo.db.prepare(sql).all(fts, ...filtros.params) as any[];
+  if (!linhas.length) return;
   // bm25 é negativo (quanto menor, melhor); normaliza para [0,1]
-  const melhor = Math.min(...linhas.map((l) => l.bm25));
-  const pior = Math.max(...linhas.map((l) => l.bm25));
+  const melhor = Math.min(...linhas.map((l) => l._bm25));
+  const pior = Math.max(...linhas.map((l) => l._bm25));
   const faixa = pior - melhor || 1;
+  for (const l of linhas) {
+    const { _rowid, _bm25, _trecho, ...doc } = l;
+    mapa.set(_rowid, { doc, trecho: _trecho, lexical: 1 - (_bm25 - melhor) / faixa, semantica: 0 });
+  }
+}
 
-  const pontuados = linhas
-    .filter((l) => f.incluir_cancelados || !SITUACOES_SUPERADAS.test(l.situacao ?? ""))
-    .map((l) => {
-      const relevancia = 1 - (l.bm25 - melhor) / faixa;
-      const autoridade = PESO_AUTORIDADE[l.autoridade];
-      const idade = idadeEmAnos(l.data_julgamento);
+function viaSemantica(acervo: Acervo, vetor: Float32Array, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>) {
+  // Busca mais vizinhos que o necessário porque os filtros são aplicados depois do KNN.
+  const k = filtros.where.length ? CANDIDATOS * 4 : CANDIDATOS;
+  const vizinhos = acervo.vizinhos(vetor, k);
+  if (!vizinhos.length) return;
+  const dist = new Map(vizinhos.map((v) => [v.rowid, v.distancia]));
+  const ids = [...dist.keys()];
+  const linhas = acervo.db
+    .prepare(
+      `SELECT d.rowid AS _rowid, d.* FROM documentos d
+       WHERE d.rowid IN (${ids.map(() => "?").join(",")}) ${filtros.where.map((w) => `AND ${w}`).join(" ")}`,
+    )
+    .all(...ids, ...filtros.params) as any[];
+  if (!linhas.length) return;
+  // similaridade cosseno = 1 - distância; normaliza dentro dos candidatos
+  const sims = linhas.map((l) => 1 - dist.get(l._rowid)!);
+  const max = Math.max(...sims), min = Math.min(...sims);
+  const faixa = max - min || 1;
+  linhas.forEach((l, i) => {
+    const { _rowid, ...doc } = l;
+    const semantica = (sims[i] - min) / faixa;
+    const atual = mapa.get(_rowid);
+    if (atual) atual.semantica = semantica;
+    else mapa.set(_rowid, { doc, trecho: null, lexical: 0, semantica });
+  });
+}
+
+function resumoTexto(d: Documento): string {
+  const t = (d.tese ?? d.ementa ?? d.titulo).replace(/\s+/g, " ").trim();
+  return t.length > 320 ? `${t.slice(0, 320)} …` : t;
+}
+
+export interface OpcoesPesquisa {
+  /** Vetor da consulta já calculado (busca semântica). Sem ele, a busca é só lexical. */
+  vetorConsulta?: Float32Array | null;
+}
+
+/**
+ * Pesquisa com ranqueamento híbrido: relevância textual (BM25) e semântica (embeddings),
+ * combinadas com a autoridade do precedente e a atualidade do julgamento.
+ * Entendimentos cancelados/revisados são penalizados ou omitidos.
+ */
+export function pesquisar(
+  acervo: Acervo,
+  f: FiltrosPesquisa,
+  opts: OpcoesPesquisa = {},
+): { total_candidatos: number; modo: "hibrido" | "lexical"; resultados: ResultadoPesquisa[] } {
+  const filtros = filtrosSql(f);
+  const mapa = new Map<number, Candidato>();
+  const fts = montarConsultaFts(f.consulta);
+  if (fts) viaLexical(acervo, f, fts, filtros, mapa);
+  const hibrido = !!opts.vetorConsulta && acervo.temVetores;
+  if (hibrido) viaSemantica(acervo, opts.vetorConsulta!, filtros, mapa);
+
+  const pontuados = [...mapa.values()]
+    .filter((c) => f.incluir_cancelados || !SITUACOES_SUPERADAS.test(c.doc.situacao ?? ""))
+    .map((c) => {
+      const relevancia = hibrido ? 0.45 * c.lexical + 0.55 * c.semantica : c.lexical;
+      const autoridade = PESO_AUTORIDADE[c.doc.autoridade];
+      const idade = idadeEmAnos(c.doc.data_julgamento);
       const atualidade = idade === null ? 0.3 : Math.exp(-idade / 8);
       let pontuacao = 0.6 * relevancia + 0.28 * autoridade + 0.12 * atualidade;
-      if (SITUACOES_SUPERADAS.test(l.situacao ?? "")) pontuacao *= 0.4;
-      return { l, pontuacao };
+      if (SITUACOES_SUPERADAS.test(c.doc.situacao ?? "")) pontuacao *= 0.4;
+      return { c, pontuacao };
     })
     .sort((a, b) => b.pontuacao - a.pontuacao);
 
@@ -159,7 +221,8 @@ export function pesquisar(acervo: Acervo, f: FiltrosPesquisa): { total_candidato
 
   return {
     total_candidatos: pontuados.length,
-    resultados: pontuados.slice(inicio, inicio + limite).map(({ l, pontuacao }) => ({
+    modo: hibrido ? "hibrido" : "lexical",
+    resultados: pontuados.slice(inicio, inicio + limite).map(({ c: { doc: l, trecho }, pontuacao }) => ({
       id: l.id,
       tribunal: l.tribunal,
       tipo: l.tipo,
@@ -169,7 +232,7 @@ export function pesquisar(acervo: Acervo, f: FiltrosPesquisa): { total_candidato
       data_julgamento: l.data_julgamento,
       autoridade: l.autoridade,
       situacao: l.situacao,
-      trecho: l.trecho.replace(/\s+/g, " ").trim(),
+      trecho: trecho ? trecho.replace(/\s+/g, " ").trim() : resumoTexto(l),
       tese: l.tese,
       fonte_url: l.fonte_url,
       pontuacao: Math.round(pontuacao * 1000) / 1000,
