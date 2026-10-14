@@ -144,7 +144,8 @@ export class Acervo {
       // Node sem loadExtension (anterior ao 22.13) ou binário ausente: segue só com a busca textual.
       console.error(`Índice vetorial indisponível (${(e as Error).message}); busca semântica desativada.`);
     }
-    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+    // Várias sessões (chat, Cowork, Claude Code) podem abrir a mesma base: espera em vez de falhar.
+    this.db.exec("PRAGMA busy_timeout = 15000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
     this.db.exec(SCHEMA_LEGISLACAO);
     const meta = this.lerMeta("vetor_dimensoes");

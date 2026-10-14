@@ -9,7 +9,7 @@
  *  3. prepara a pasta de dados, copia a base inicial e inicia o servidor.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,7 +139,7 @@ async function modoInstalacao(): Promise<void> {
     "1. Baixe e instale o Node.js LTS em https://nodejs.org (instalador para macOS).\n" +
     "2. Feche o Claude Desktop por completo (Cmd+Q) e abra de novo.\n" +
     "A extensão encontra o Node.js instalado sozinha; não é preciso mudar nenhuma configuração.";
-  const server = new McpServer({ name: "jurispetrus", version: "0.1.1" }, { instructions: orientacao });
+  const server = new McpServer({ name: "jurispetrus", version: "0.1.2" }, { instructions: orientacao });
   server.registerTool(
     "jurispetrus_instalacao",
     {
@@ -163,20 +163,38 @@ async function iniciar(): Promise<void> {
   const base = join(pasta, "acervo.db");
   const inicial = join(aqui, "..", "data", "acervo-inicial.db");
   if (!existsSync(base) && existsSync(inicial)) {
-    copyFileSync(inicial, base);
-    registrar(`Base inicial copiada para ${base}`);
+    // O Claude Desktop pode abrir várias cópias do servidor ao mesmo tempo: copia para um
+    // arquivo temporário e renomeia (operação atômica), para nenhuma ver a base pela metade.
+    const temporario = `${base}.${process.pid}.tmp`;
+    copyFileSync(inicial, temporario);
+    if (existsSync(base)) rmSync(temporario, { force: true });
+    else {
+      renameSync(temporario, base);
+      registrar(`Base inicial copiada para ${base}`);
+    }
   }
 
   // A base inicial vem sem o índice textual (para caber no pacote); ele é refeito aqui, em ~1 s.
   if (existsSync(base)) {
     const db = new DatabaseSync(base);
-    const pendente = db.prepare("SELECT 1 FROM meta WHERE chave = 'indice_textual_pendente'").get();
-    if (pendente) {
-      db.exec(
-        "INSERT INTO documentos_fts(documentos_fts) VALUES('rebuild'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('rebuild'); " +
-          "DELETE FROM meta WHERE chave = 'indice_textual_pendente';",
-      );
-      registrar("Índice textual da base inicial reconstruído");
+    db.exec("PRAGMA busy_timeout = 30000");
+    const pendente = () => !!db.prepare("SELECT 1 FROM meta WHERE chave = 'indice_textual_pendente'").get();
+    if (pendente()) {
+      // transação exclusiva: só um processo reconstrói; os demais esperam e encontram pronto
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (pendente()) {
+          db.exec(
+            "INSERT INTO documentos_fts(documentos_fts) VALUES('rebuild'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('rebuild'); " +
+              "DELETE FROM meta WHERE chave = 'indice_textual_pendente';",
+          );
+          registrar("Índice textual da base inicial reconstruído");
+        }
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
     }
     db.close();
   }
