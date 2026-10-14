@@ -5,7 +5,7 @@ import type { Acervo } from "./db.js";
 import { pesquisar, identificacao, type FiltrosPesquisa } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
 import { consultarProcesso, cnjValido, formatarCnj } from "./sources/datajud.js";
-import { buscarLegislacao } from "./sources/lexml.js";
+import { pesquisarSigen } from "./legislacao/fontes.js";
 import type { Embedder } from "./embeddings.js";
 import type { FonteAoVivo } from "./fontes/tipos.js";
 import { expandirTribunais, pesquisarAoVivo, type RelatorioFonte } from "./federado.js";
@@ -17,9 +17,11 @@ import {
   pesquisarDispositivos,
   vizinhos,
   normasIndexadas,
+  normaIndexada,
   type CitacaoLegal,
 } from "./legislacao/indice.js";
-import { resolverNorma } from "./legislacao/catalogo.js";
+import { CATALOGO, resolverNorma } from "./legislacao/catalogo.js";
+import { importarNorma } from "./legislacao/importar.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -71,6 +73,9 @@ export interface OpcoesServidor {
   /** Claude no servidor para análises estruturadas (opcional). */
   analista?: AnalistaIA | null;
 }
+
+/** Importações de normas em andamento (compartilhadas entre requisições do mesmo processo). */
+const importacoes = new Map<string, Promise<undefined>>();
 
 export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpServer {
   const server = new McpServer(
@@ -344,6 +349,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       const r = verificarCitacao(acervo, citacao, relator);
       const legal = r.status === "NAO_RECONHECIDA" ? interpretarCitacaoLegal(citacao) : null;
       if (legal) {
+        await garantirNorma(legal);
         const d = dispositivoCitado(legal);
         return ok(
           d
@@ -375,6 +381,25 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       return ok({ estado: "ENCONTRADO", fonte: "DataJud/CNJ", processos: r.processos });
     }),
   );
+
+  /** Importa sob demanda a norma citada que ainda não está no índice (texto atualizado da Câmara). */
+  const garantirNorma = async (c: CitacaoLegal): Promise<string | undefined> => {
+    if (normaIndexada(acervo, c.norma)) return undefined;
+    const n = c.avulsa ?? CATALOGO.find((x) => x.sigla === c.norma);
+    if (!n) return undefined;
+    let tarefa = importacoes.get(n.sigla);
+    if (!tarefa) {
+      tarefa = importarNorma(acervo, n, { fetchImpl: opts.fetchImpl }).then(() => undefined);
+      importacoes.set(n.sigla, tarefa);
+      tarefa.finally(() => importacoes.delete(n.sigla)).catch(() => {});
+    }
+    try {
+      await tarefa;
+      return `${n.nome} importada agora do texto consolidado.`;
+    } catch (e) {
+      return `Não foi possível importar ${n.nome}: ${(e as Error).message}`;
+    }
+  };
 
   /** Dispositivo exato + vizinhos, para citações como "art. 14 do CDC". */
   const dispositivoCitado = (c: CitacaoLegal) => {
@@ -413,6 +438,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     },
     protegido("buscar_legislacao", async ({ consulta, normas, limite, incluir_revogados }) => {
       const citacao = interpretarCitacaoLegal(consulta);
+      const importacao = citacao ? await garantirNorma(citacao) : undefined;
       if (citacao) {
         const d = dispositivoCitado(citacao);
         if (d) {
@@ -422,6 +448,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
             dispositivo: d,
             contexto: vizinhos(acervo, doc).map((v) => ({ rotulo: v.rotulo, texto: v.texto.slice(0, 600), revogado: !!v.revogado })),
             aviso: d.revogado ? "Dispositivo revogado: não o cite como direito vigente." : undefined,
+            importacao,
           });
         }
       }
@@ -435,8 +462,16 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         return ok({ estado: "ENCONTRADO", fonte: "texto consolidado indexado", resultados, normas_indexadas: undefined });
       }
       try {
-        const lexml = await buscarLegislacao(consulta, { limite, fetchImpl: opts.fetchImpl });
-        return ok({ estado: lexml.normas.length ? "ENCONTRADO" : "SEM_RESULTADO", fonte: "LexML Brasil (só identificação da norma)", ...lexml });
+        const sigen = await pesquisarSigen(consulta, { limite, fetchImpl: opts.fetchImpl });
+        return ok({
+          estado: sigen.normas.length ? "NORMAS_ENCONTRADAS" : "SEM_RESULTADO",
+          fonte: "Catálogo de legislação do Senado (identificação da norma)",
+          ...sigen,
+          importacao,
+          orientacao:
+            "O texto destas normas ainda não está no índice. Para ler um artigo, chame buscar_legislacao com a citação " +
+            "completa (ex.: 'art. 3º da Lei 13.146/2015'): a norma é importada do texto consolidado.",
+        });
       } catch (e) {
         return ok({
           estado: citacao ? "NAO_INDEXADO" : "SEM_RESULTADO",
@@ -496,9 +531,9 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         lista.map(async (q) => {
           const termosJ = q.termos_jurisprudencia || q.questao;
           const termosL = q.termos_legislacao || q.questao;
-          const citadas = (q.normas_provaveis ?? [])
-            .map((n) => interpretarCitacaoLegal(n))
-            .filter((c): c is CitacaoLegal => c !== null)
+          const citacoes = (q.normas_provaveis ?? []).map((n) => interpretarCitacaoLegal(n)).filter((c): c is CitacaoLegal => c !== null);
+          await Promise.all(citacoes.map(garantirNorma));
+          const citadas = citacoes
             .map(dispositivoCitado)
             .filter((d): d is NonNullable<ReturnType<typeof dispositivoCitado>> => d !== null);
           const normasFiltro = [...new Set((q.normas_provaveis ?? []).map((n) => resolverNorma(n.split(",")[0])?.sigla).filter(Boolean))] as string[];

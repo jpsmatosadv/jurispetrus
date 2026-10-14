@@ -1,4 +1,10 @@
 /** Normas federais mais citadas, com siglas e apelidos usados em peças e decisões. */
+/** Caminhos fixos na Câmara para as normas que a busca por número não alcança. */
+export const CAMINHOS_CAMARA: Record<string, string> = {
+  CF: "consti/1988/constituicao-1988-5-outubro-1988-322142-normaatualizada-pl",
+  ADCT: "conadc/1988/constituicao.adct-1988-5-outubro-1988-322234-normaatualizada-pl",
+};
+
 export interface NormaCatalogo {
   sigla: string;
   nome: string;
@@ -12,6 +18,7 @@ export interface NormaCatalogo {
 
 export const CATALOGO: NormaCatalogo[] = [
   { sigla: "CF", nome: "Constituição da República Federativa do Brasil de 1988", apelidos: ["CF", "CF/88", "CRFB", "Constituição Federal", "Constituição"], urn: "urn:lex:br:federal:constituicao:1988-10-05;1988", tipo: "CON", numero: "1988", ano: 1988 },
+  { sigla: "ADCT", nome: "Ato das Disposições Constitucionais Transitórias", apelidos: ["ADCT"], urn: "urn:lex:br:federal:ato.disposicoes.constitucionais.transitorias:1988-10-05;1988", tipo: "ADCT", numero: "1988", ano: 1988 },
   { sigla: "CC", nome: "Código Civil (Lei nº 10.406/2002)", apelidos: ["CC", "CC/2002", "Código Civil"], urn: "urn:lex:br:federal:lei:2002-01-10;10406", tipo: "LEI", numero: "10406", ano: 2002 },
   { sigla: "CPC", nome: "Código de Processo Civil (Lei nº 13.105/2015)", apelidos: ["CPC", "CPC/2015", "Código de Processo Civil", "NCPC"], urn: "urn:lex:br:federal:lei:2015-03-16;13105", tipo: "LEI", numero: "13105", ano: 2015 },
   { sigla: "CDC", nome: "Código de Defesa do Consumidor (Lei nº 8.078/1990)", apelidos: ["CDC", "Código de Defesa do Consumidor", "Lei 8.078/90"], urn: "urn:lex:br:federal:lei:1990-09-11;8078", tipo: "LEI", numero: "8078", ano: 1990 },
@@ -56,4 +63,41 @@ export function resolverNorma(texto: string): NormaCatalogo | undefined {
     (numero ? CATALOGO.find((n) => n.numero === numero && n.tipo !== "CON") : undefined) ??
     CATALOGO.find((n) => n.apelidos.some((a) => norm(a).length > 4 && t.includes(norm(a))))
   );
+}
+
+const TIPOS_LEI: Record<string, { tipo: string; rotulo: string }> = {
+  lei: { tipo: "LEI", rotulo: "Lei" },
+  "lei complementar": { tipo: "LCP", rotulo: "Lei Complementar" },
+  "decreto-lei": { tipo: "DEL", rotulo: "Decreto-Lei" },
+  "decreto lei": { tipo: "DEL", rotulo: "Decreto-Lei" },
+  decreto: { tipo: "DEC", rotulo: "Decreto" },
+  "medida provisória": { tipo: "MPV", rotulo: "Medida Provisória" },
+};
+
+/**
+ * Lê "Lei nº 13.146/2015", "Lei 13.146, de 2015", "LC 123/2006", "Decreto-Lei 911/69" e devolve
+ * uma norma ad hoc (fora do catálogo), importável sob demanda.
+ */
+export function normaPorNumero(texto: string): NormaCatalogo | undefined {
+  const m = texto.match(
+    /\b(lei complementar|lc|decreto[- ]lei|decreto|medida provis[óo]ria|mp|lei)\s*(?:federal\s*)?(?:n[º°o.]*\s*)?(\d[\d.]*)\s*(?:\/|,?\s*de\s*(?:\d{1,2}\s*(?:de\s*)?\w+\s*(?:de\s*)?)?)\s*(\d{2,4})/i,
+  );
+  if (!m) return undefined;
+  const chave = m[1].toLowerCase().replace(/^lc$/, "lei complementar").replace(/^mp$/, "medida provisória").replace("provisoria", "provisória");
+  const t = TIPOS_LEI[chave];
+  if (!t) return undefined;
+  const numero = m[2].replace(/\./g, "");
+  let ano = Number(m[3]);
+  if (ano < 100) ano += ano > 30 ? 1900 : 2000;
+  const doCatalogo = CATALOGO.find((n) => n.numero === numero && n.tipo === t.tipo);
+  if (doCatalogo) return doCatalogo;
+  return {
+    sigla: `${t.tipo}-${numero}-${ano}`,
+    nome: `${t.rotulo} nº ${Number(numero).toLocaleString("pt-BR")}/${ano}`,
+    apelidos: [],
+    urn: "",
+    tipo: t.tipo,
+    numero,
+    ano,
+  };
 }

@@ -4,7 +4,7 @@
  */
 import type { Acervo } from "../db.js";
 import { montarConsultaFts } from "../search.js";
-import { CATALOGO, resolverNorma } from "./catalogo.js";
+import { CATALOGO, normaPorNumero, resolverNorma, type NormaCatalogo } from "./catalogo.js";
 
 export interface Dispositivo {
   id: string;
@@ -65,6 +65,8 @@ END;
 /** Normaliza o número do artigo: "5º" → "5", "1.022" → "1022", "121-A" → "121-A". */
 export function normalizarArtigo(a: string): string {
   return a
+    .trim()
+    .replace(/\.+$/, "")
     .replace(/[º°o]\b/gi, "")
     .replace(/(\d)\.(\d)/g, "$1$2")
     .replace(/\s*-\s*/g, "-")
@@ -115,6 +117,10 @@ export function vizinhos(acervo: Acervo, d: Dispositivo, antes = 1, depois = 1):
     .all(d.norma, d.ordem - antes, d.ordem + depois, d.id) as unknown as Dispositivo[];
 }
 
+export function normaIndexada(acervo: Acervo, sigla: string): boolean {
+  return !!acervo.db.prepare("SELECT 1 FROM normas WHERE sigla = ?").get(sigla);
+}
+
 export function normasIndexadas(acervo: Acervo) {
   return acervo.db.prepare("SELECT sigla, nome, fonte, fonte_url, versao, atualizado_em, dispositivos FROM normas ORDER BY sigla").all();
 }
@@ -122,6 +128,8 @@ export function normasIndexadas(acervo: Acervo) {
 export interface CitacaoLegal {
   norma: string;
   artigo: string;
+  /** Norma fora do catálogo, identificada por tipo/número/ano (importável sob demanda). */
+  avulsa?: NormaCatalogo;
 }
 
 /**
@@ -140,6 +148,8 @@ export function interpretarCitacaoLegal(texto: string): CitacaoLegal | null {
     antes,
     depois,
   ];
+  const porNumero = normaPorNumero(texto);
+  if (porNumero) return porNumero.apelidos.length ? { norma: porNumero.sigla, artigo } : { norma: porNumero.sigla, artigo, avulsa: porNumero };
   for (const c of candidatos) {
     const n = resolverNorma(c.replace(/[,;()]/g, " ").trim()) ?? resolverPorSigla(c);
     if (n) return { norma: n.sigla, artigo };

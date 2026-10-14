@@ -55,11 +55,27 @@ export function montarConsultaFts(consulta: string): string | null {
   }
   for (const termo of tokenizar(resto)) {
     if (STOPWORDS.has(termo) || termo.length < 2) continue;
-    // prefixo para palavras longas ("indeniza*" casa "indenização", "indenizatória")
-    partes.push(termo.length >= 7 ? `${termo.slice(0, Math.max(5, Math.ceil(termo.length * 0.7)))}*` : `"${termo}"`);
+    // radical + prefixo para palavras longas ("indeniz*" casa "indenização", "indenizatória", "indenizar")
+    partes.push(termo.length >= 7 ? `${radical(termo)}*` : `"${termo}"`);
   }
   const unicos = [...new Set(partes)];
   return unicos.length ? unicos.join(" OR ") : null;
+}
+
+/** Sufixos (sem acento) removidos para obter o radical; os mais longos primeiro. */
+const SUFIXOS = [
+  "icional", "acional", "amentos", "imentos", "cional", "amento", "imento", "ional", "mente", "acoes", "icoes", "idades",
+  "encias", "ancias", "acao", "icao", "coes", "soes", "idade", "encia", "ancia", "avel", "ivel", "ario", "aria", "adores",
+  "ador", "adora", "ados", "adas", "idos", "idas", "ado", "ada", "ido", "ida", "ivo", "iva", "oso", "osa", "cao", "sao",
+  "ar", "er", "ir", "os", "as", "es", "o", "a", "e", "s",
+];
+
+/** Radicalizador leve para português: corta um sufixo, mantendo ao menos 5 letras. */
+export function radical(termo: string): string {
+  for (const suf of SUFIXOS) {
+    if (termo.endsWith(suf) && termo.length - suf.length >= 5) return termo.slice(0, -suf.length);
+  }
+  return termo;
 }
 
 function tokenizar(texto: string): string[] {

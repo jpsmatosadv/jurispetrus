@@ -115,3 +115,21 @@ export function autoridadePorOrgao(orgao: string | null | undefined): "C" | "D" 
     ? "C"
     : "D";
 }
+
+/** Identificação honesta do cliente nas requisições aos portais públicos. */
+export const USER_AGENT = "jurispetrus/0.1 (+https://github.com/jpsmatosadv/jurispetrus)";
+
+/** fetch com User-Agent próprio e novas tentativas em 429/502/503/504 (espera exponencial). */
+export async function buscarComRetentativa(
+  url: string,
+  init: RequestInit & { tentativas?: number; fetchImpl?: typeof fetch } = {},
+): Promise<Response> {
+  const { tentativas = 4, fetchImpl = fetch, headers, ...resto } = init;
+  for (let i = 0; ; i++) {
+    const r = await fetchImpl(url, { ...resto, headers: { "User-Agent": USER_AGENT, ...(headers as Record<string, string>) } });
+    if (![429, 502, 503, 504].includes(r.status) || i >= tentativas - 1) return r;
+    await r.arrayBuffer().catch(() => undefined);
+    const espera = Number(r.headers.get("retry-after")) * 1000 || 2000 * 2 ** i;
+    await new Promise((ok) => setTimeout(ok, Math.min(espera, 30_000)));
+  }
+}

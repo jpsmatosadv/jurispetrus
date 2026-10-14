@@ -9,11 +9,31 @@ Servidor MCP (Model Context Protocol) que conecta o Claude à jurisprudência e 
 | `pesquisar_jurisprudencia` | Busca no acervo indexado e, quando há filtro de tribunal, também nos portais oficiais em tempo real. Ordena por relevância (palavras + significado), autoridade (A–E) e atualidade |
 | `obter_documento` | Ementa, tese, decisão e referências completas, com paginação |
 | `verificar_citacao` | Confere "REsp 1.990.285/SP", "Súmula Vinculante 13", "Súmula 331 do TST", "Tema 1046 da Repercussão Geral", "ADI 5.766", "IRDR 62/TJSP" ou um número CNJ (CONFIRMADO / DIVERGENCIA / NAO_ENCONTRADO) |
+| `analisar_caso` | A partir da narrativa dos fatos, indica para cada questão jurídica os dispositivos legais vigentes, os precedentes qualificados e a jurisprudência pertinente |
+| `extrair_razao_decidir` | Ratio decidendi de um julgado: questão, regra decisiva, fundamentos determinantes, obiter dicta, fatos materiais, dispositivos e precedentes citados |
+| `buscar_legislacao` | Texto consolidado vigente, artigo por artigo: por citação ("art. 14 do CDC", "art. 3º da Lei 13.146/2015") ou por assunto |
 | `consultar_processo` | Metadados e movimentações pelo número CNJ (DataJud/CNJ, ao vivo) |
-| `buscar_legislacao` | Leis e normas no LexML |
 | `listar_fontes` | O que está indexado e quais tribunais respondem ao vivo |
 
-Há também o prompt `pesquisa_fundamentada`, um roteiro que leva o Claude a pesquisar precedentes qualificados primeiro, ler os mais pertinentes, verificar citações e responder em forma de parecer.
+`verificar_citacao` também diz se um dispositivo legal está VIGENTE ou REVOGADO.
+
+Há dois prompts prontos: `analise_de_caso` (dos fatos ao parecer, com legislação e precedentes) e `pesquisa_fundamentada` (pesquisa de uma tese, priorizando precedentes qualificados).
+
+## Legislação atualizada
+
+O índice guarda o texto vigente de cada artigo, com o caminho (Livro > Título > Capítulo > Seção), as notas de redação ("redação dada pela Lei nº ...") e a marcação de revogados. Já vêm a Constituição, o ADCT, CC, CPC, CDC, CLT, CTN, CP, CPP, LINDB, ECA e mais 20 leis de uso frequente (cerca de 9 mil artigos). Qualquer outra lei federal citada numa consulta ("art. 3º da Lei 13.146/2015", "LC 123/2006, art. 3º") é importada na hora.
+
+Fontes, em ordem: a "norma atualizada" da Câmara dos Deputados (HTML ou, quando o HTML falha, .docx), o normas.leg.br do Senado (texto estruturado por dispositivo) e o catálogo de legislação do Senado (para identificar normas e URNs). Para atualizar: `npm run ingest -- --fonte legislacao` (uma vez por mês) ou `npm run ingest -- --lei "Lei 14.181/2021"`.
+
+Alterações com vacatio legis aparecem já incorporadas ao texto, com a nota "em vigor ... após a publicação"; o Claude é orientado a observar essa nota.
+
+## Razão de decidir e análise de caso
+
+- Nos precedentes qualificados (súmulas, temas, IRDR), a tese firmada é a ratio.
+- Nas ementas no padrão da Recomendação CNJ 154/2024, as seções (caso, questão, razões de decidir, dispositivo e tese, dispositivos e jurisprudência citados) são separadas automaticamente.
+- Quando o portal de origem oferece o inteiro teor em HTML (eproc, TJBA, TST), ele é baixado para a análise.
+- Com `ANTHROPIC_API_KEY` configurada, o servidor usa Claude (padrão `claude-opus-5-5`, saída estruturada) para extrair a ratio e para decompor a narrativa dos fatos em questões jurídicas. As análises ficam guardadas no banco e não são refeitas. As chamadas usam a opção de reserva da API (`fallbacks: "default"`): se o classificador de segurança recusar um texto, a API repete o pedido em um modelo alternativo.
+- Sem a chave, as ferramentas devolvem o material organizado e o próprio Claude da conversa faz a análise.
 
 ## Cobertura
 
@@ -83,7 +103,7 @@ npm run build
 ### Montar o acervo
 
 ```bash
-npm run ingest                    # todas as fontes: stj, bnp, tst e stf
+npm run ingest                    # todas as fontes: stj, bnp, tst, stf e legislacao
 npm run ingest -- --fonte bnp     # só o Banco Nacional de Precedentes (~15 min)
 npm run ingest -- --fonte stj --meses 3 --orgao terceira-turma
 npm run ingest -- --fonte bnp --tribunal TJSP --tribunal TRF4
@@ -151,6 +171,9 @@ Variáveis de ambiente (veja `.env.example`):
 | `JURIS_EMBEDDINGS_MODEL` / `_DIM` / `_URL` | por provedor | Modelo, dimensão e endpoint dos embeddings |
 | `VOYAGE_API_KEY` / `JURIS_EMBEDDINGS_KEY` | vazio | Chave do provedor de embeddings |
 | `JURIS_TIMEOUT_FONTES` | `25000` | Tempo-limite (ms) de cada portal consultado ao vivo |
+| `ANTHROPIC_API_KEY` | vazio | Ativa a análise com Claude no servidor (ratio e decomposição dos fatos) |
+| `JURIS_IA_MODELO` | `claude-opus-5-5` | Modelo usado nessas análises |
+| `JURIS_IA` | ligada | `desligada` desativa a análise no servidor mesmo com a chave |
 
 ## Desenvolvimento
 
@@ -175,7 +198,9 @@ src/
   federado.ts        pesquisa paralela nas fontes ao vivo, com tempo-limite
   fontes/            conectores ao vivo (eproc, e-SAJ, TJDFT, TJPR, TJBA, TJES, TRF5, TST, CARF, TCU)
   sources/datajud.ts consulta processual no DataJud/CNJ
-  sources/lexml.ts   busca de legislação no LexML
+  legislacao/        catálogo de normas, índice de dispositivos, leitores (Câmara, normas.leg.br, .docx), importação
+  ratio.ts           estrutura da ementa (padrão CNJ) e download do inteiro teor
+  ia.ts              análise com Claude no servidor (opcional)
   ingest/            ingestão: STJ, BNP/CNJ, STF (repercussão geral) e TST
 ```
 
@@ -188,5 +213,7 @@ src/
 - O acervo STJ traz o espelho do acórdão (ementa, decisão e referências), não o voto.
 - A cota é contada em memória e zera quando o processo reinicia. Para cobrança real, mova o contador para o banco e use OAuth para identificar usuários.
 - O DataJud não devolve peças nem inteiro teor e omite processos sigilosos.
+- A legislação cobre normas federais. Leis estaduais e municipais e atos infralegais (resoluções, instruções normativas) ainda não estão no índice.
+- Sem `ANTHROPIC_API_KEY`, a razão de decidir de ementas fora do padrão CNJ fica a cargo do Claude na conversa. A extração no servidor não foi testada contra a API real neste ambiente (sem chave); os testes usam um analista simulado.
 
 As pesquisas apoiam o trabalho do advogado e não o substituem: a pertinência de cada precedente ao caso concreto continua sendo juízo profissional.

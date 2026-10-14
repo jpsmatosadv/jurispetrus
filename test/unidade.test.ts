@@ -4,7 +4,6 @@ import { Acervo } from "../src/db.js";
 import { pesquisar, montarConsultaFts } from "../src/search.js";
 import { interpretarCitacao, verificarCitacao } from "../src/citation.js";
 import { aliasTribunal, cnjValido, formatarCnj } from "../src/sources/datajud.js";
-import { interpretarSru } from "../src/sources/lexml.js";
 import { lerCsv } from "../src/ingest/csv.js";
 import { mapearEspelho, mapearTema, normalizarData } from "../src/ingest/stj.js";
 import { Cota } from "../src/http.js";
@@ -78,7 +77,9 @@ test("lerCsv trata aspas e quebras de linha", () => {
 });
 
 test("montarConsultaFts gera expressão segura", () => {
-  assert.equal(montarConsultaFts('"dano moral" AND indenização'), '"dano moral" OR indeniza*');
+  assert.equal(montarConsultaFts('"dano moral" AND indenização'), '"dano moral" OR indeniz*');
+  assert.equal(montarConsultaFts("prescricional"), "prescr*");
+  assert.equal(montarConsultaFts("responsabilidade"), "responsabil*");
   assert.equal(montarConsultaFts("de a o"), null);
   assert.doesNotThrow(() => pesquisar(acervoDeTeste(), { consulta: 'NEAR( * ) "' }));
 });
@@ -129,17 +130,6 @@ test("número CNJ: dígito verificador e tribunal", () => {
   assert.equal(aliasTribunal("00000000020245020000"), "trt2");
   assert.equal(aliasTribunal("00000000020245000000"), "tst");
   assert.equal(aliasTribunal("00000000020246070000"), "tre-df");
-});
-
-test("interpretarSru extrai registros do LexML", () => {
-  const xml = `<srw:searchRetrieveResponse xmlns:srw="x"><srw:numberOfRecords>1</srw:numberOfRecords><srw:records><srw:record>
-    <srw:recordData><srw_dc:dc><urn>urn:lex:br:federal:lei:2018-08-14;13709</urn><dc:title>Lei nº 13.709, de 14 de Agosto de 2018</dc:title>
-    <dc:description>Lei Geral de Proteção de Dados Pessoais (LGPD).</dc:description><dc:date>2018-08-14</dc:date><tipoDocumento>Lei</tipoDocumento>
-    </srw_dc:dc></srw:recordData></srw:record></srw:records></srw:searchRetrieveResponse>`;
-  const r = interpretarSru(xml);
-  assert.equal(r.total, 1);
-  assert.equal(r.normas[0].titulo, "Lei nº 13.709, de 14 de Agosto de 2018");
-  assert.equal(r.normas[0].url, "https://www.lexml.gov.br/urn/urn:lex:br:federal:lei:2018-08-14;13709");
 });
 
 test("Cota bloqueia após o limite mensal", () => {

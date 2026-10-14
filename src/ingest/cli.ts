@@ -5,14 +5,18 @@ import { ingerirEspelhos, ingerirTemas, PACOTES_ESPELHOS } from "./stj.js";
 import { ingerirBnp } from "./bnp.js";
 import { ingerirRepercussaoGeral } from "./stf.js";
 import { ingerirEnunciadosTst } from "./tst.js";
+import { importarCatalogo, importarNorma } from "../legislacao/importar.js";
+import { normaPorNumero } from "../legislacao/catalogo.js";
 
-const FONTES_INGESTAO = ["stj", "bnp", "stf", "tst"] as const;
+const FONTES_INGESTAO = ["stj", "bnp", "stf", "tst", "legislacao"] as const;
 
 const { values } = parseArgs({
   options: {
     fonte: { type: "string", multiple: true },
     tribunal: { type: "string", multiple: true },
     "rg-arquivo": { type: "string" },
+    norma: { type: "string", multiple: true },
+    lei: { type: "string", multiple: true },
     meses: { type: "string", default: "12" },
     orgao: { type: "string", multiple: true },
     forcar: { type: "boolean", default: false },
@@ -24,12 +28,15 @@ const { values } = parseArgs({
 if (values.ajuda) {
   console.log(`Uso: npm run ingest -- [opções]
 
-  --fonte F        stj | bnp | stf | tst (pode repetir; padrão: todas)
+  --fonte F        stj | bnp | stf | tst | legislacao (pode repetir; padrão: todas)
                    stj = acórdãos e precedentes qualificados do STJ (Dados Abertos)
                    bnp = Banco Nacional de Precedentes do CNJ: súmulas, SV, RG, ADI/ADPF,
                          IRDR, IAC, IRR de STF, TST, TNU, TRFs, TJs e TRTs
                    stf = temas de repercussão geral (exportação oficial do STF)
                    tst = súmulas, OJs e precedentes normativos do TST
+                   legislacao = texto consolidado da CF, códigos e principais leis
+  --norma SIGLA    só essas normas do catálogo (ex.: CDC, CC, CPC); pode repetir
+  --lei "Lei 13.146/2015"  importa qualquer lei federal pelo número; pode repetir
   --tribunal SIGLA só esses tribunais no BNP (ex.: TJSP, TRF4); pode repetir
   --rg-arquivo P   planilha de repercussão geral baixada no navegador (se o STF recusar o download)
   --meses N        arquivos mensais mais recentes por órgão (padrão 12)
@@ -42,7 +49,7 @@ Pacotes de espelhos disponíveis:
   process.exit(0);
 }
 
-const fontes = values.fonte?.length ? values.fonte : [...FONTES_INGESTAO];
+const fontes = values.fonte?.length ? values.fonte : values.lei?.length ? [] : [...FONTES_INGESTAO];
 const invalidas = fontes.filter((f) => !(FONTES_INGESTAO as readonly string[]).includes(f));
 if (invalidas.length) {
   console.error(`Fonte(s) não suportada(s): ${invalidas.join(", ")}. Disponíveis: ${FONTES_INGESTAO.join(", ")}`);
@@ -65,6 +72,12 @@ try {
   // O STF vem depois do BNP para que a redação oficial dos temas de RG prevaleça.
   if (fontes.includes("bnp")) total += await ingerirBnp(acervo, { orgaos: values.tribunal });
   if (fontes.includes("tst")) total += await ingerirEnunciadosTst(acervo);
+  if (fontes.includes("legislacao")) total += await importarCatalogo(acervo, values.norma);
+  for (const texto of values.lei ?? []) {
+    const n = normaPorNumero(texto);
+    if (!n) console.error(`! Não entendi a norma "${texto}" (use, por exemplo, "Lei 13.146/2015")`);
+    else total += (await importarNorma(acervo, n, { log: (m) => console.error(m) })).dispositivos;
+  }
   if (fontes.includes("stf")) {
     try {
       total += await ingerirRepercussaoGeral(acervo, { arquivo: values["rg-arquivo"] });

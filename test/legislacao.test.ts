@@ -49,3 +49,80 @@ test("índice de dispositivos: grava, busca e marca revogados", () => {
   ]);
   assert.equal(obterDispositivo(a, "CDC", "43"), undefined);
 });
+
+import { deflateRawSync } from "node:zlib";
+import { lerNormaAtualizadaCamara, lerNormaEstruturada } from "../src/legislacao/fontes.js";
+import { docxParaHtml } from "../src/legislacao/docx.js";
+import { normaPorNumero } from "../src/legislacao/catalogo.js";
+
+const HTML_CAMARA = `
+<p>TÍTULO I</p><p>DOS DIREITOS DO CONSUMIDOR</p>
+<p>CAPÍTULO IV</p><p>DA QUALIDADE DE PRODUTOS</p>
+<p>Seção II</p><p>Da Responsabilidade pelo Fato</p>
+<p><font>Art. 14. O fornecedor de serviços responde, independentemente da existência de culpa.</font></p>
+<p><font>§ 1º O serviço é defeituoso quando não fornece a segurança esperada.</font></p>
+<p><font>Art. 14-A. Texto incluído. <a href="x"><i>(Artigo acrescido pela Lei nº 99, de 2020)</i></a></font></p>
+<p><font>Arts. 15 a 17. <a href="x"><i>(Revogados pela Lei nº 100, de 2021)</i></a></font></p>
+<p>Art. 18. (VETADO).</p>
+<p>Brasília, 11 de setembro de 1990.</p><p>Art. 99. Não é artigo, é assinatura.</p>`;
+
+test("lerNormaAtualizadaCamara: caminho, notas, faixas revogadas e fim do texto", () => {
+  const d = lerNormaAtualizadaCamara(HTML_CAMARA, "u");
+  assert.deepEqual(d.map((x) => x.artigo), ["14", "14-A", "15", "16", "17", "18"]);
+  assert.equal(d[0].caminho, "TÍTULO I - DOS DIREITOS DO CONSUMIDOR > CAPÍTULO IV - DA QUALIDADE DE PRODUTOS > Seção II - Da Responsabilidade pelo Fato");
+  assert.match(d[0].texto, /§ 1º O serviço é defeituoso/);
+  assert.equal(d[1].revogado, 0);
+  assert.match(d[1].texto, /Notas: \(Artigo acrescido pela Lei nº 99, de 2020\)/);
+  assert.ok(!d[1].texto.startsWith("Art. 14-A. Texto incluído. (Artigo"));
+  assert.deepEqual(d.slice(2, 5).map((x) => x.revogado), [1, 1, 1]);
+  assert.equal(d[5].revogado, 1);
+});
+
+test("lerNormaEstruturada: versão vigente e revogação por versão", () => {
+  const no = (id: string, tipo: string, versoes: object[], filhos: object[] = []) => ({
+    legislationIdentifier: id, legislationType: { "@id": `x:${tipo}` }, workExample: versoes, hasPart: filhos,
+  });
+  const json = no("raiz", "articulacao", [], [
+    no("cap1", "capitulo", [{ name: "CAPÍTULO I", text: "DAS PESSOAS" }], [
+      no("!art3", "artigo", [{ name: "Art. 3º" }], [
+        no("!art3_cpt", "caput", [
+          { legislationDate: "2002-01-10", legislationLegalForce: "NotInForce", text: "Texto antigo." },
+          { legislationDate: "2015-07-06", text: "São absolutamente incapazes os menores de 16 anos." },
+        ]),
+      ]),
+      no("!art4", "artigo", [{ name: "Art. 4º" }], [no("!art4_cpt", "caput", [{ legislationDate: "2020-01-01", legislationType: "Repeal_Version", text: "(Revogado)" }])]),
+    ]),
+  ]);
+  const d = lerNormaEstruturada(json, "u");
+  assert.equal(d[0].artigo, "3");
+  assert.equal(d[0].caminho, "CAPÍTULO I - DAS PESSOAS");
+  assert.match(d[0].texto, /menores de 16 anos/);
+  assert.ok(!d[0].texto.includes("Texto antigo"));
+  assert.equal(d[1].revogado, 1);
+});
+
+/** Monta um zip mínimo (um arquivo, deflate) para testar o leitor de .docx. */
+function zipCom(nome: string, conteudo: string): Buffer {
+  const dados = deflateRawSync(Buffer.from(conteudo));
+  const n = Buffer.from(nome);
+  const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(8, 8); local.writeUInt32LE(dados.length, 18); local.writeUInt16LE(n.length, 26);
+  const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(8, 10); central.writeUInt32LE(dados.length, 20); central.writeUInt16LE(n.length, 28); central.writeUInt32LE(0, 42);
+  const inicioCentral = 30 + n.length + dados.length;
+  const fim = Buffer.alloc(22); fim.writeUInt32LE(0x06054b50, 0); fim.writeUInt16LE(1, 8); fim.writeUInt16LE(1, 10); fim.writeUInt32LE(46 + n.length, 12); fim.writeUInt32LE(inicioCentral, 16);
+  return Buffer.concat([local, n, dados, central, n, fim]);
+}
+
+test("docxParaHtml lê parágrafos do document.xml", () => {
+  const xml = `<w:document><w:body><w:p><w:r><w:t>Art. 1º Esta Lei institui</w:t></w:r><w:r><w:t xml:space="preserve"> a inclusão &amp; acessibilidade.</w:t></w:r></w:p><w:p><w:r><w:t>Art. 2º (Revogado).</w:t></w:r></w:p></w:body></w:document>`;
+  const html = docxParaHtml(zipCom("word/document.xml", xml))!;
+  const d = lerNormaAtualizadaCamara(html, "u");
+  assert.equal(d[0].texto, "Art. 1º Esta Lei institui a inclusão & acessibilidade.");
+  assert.equal(d[1].revogado, 1);
+});
+
+test("normaPorNumero identifica leis fora do catálogo", () => {
+  assert.equal(normaPorNumero("Lei nº 13.146, de 6 de julho de 2015")?.sigla, "LEI-13146-2015");
+  assert.equal(normaPorNumero("LC 123/2006")?.sigla, "LCP-123-2006");
+  assert.equal(normaPorNumero("Decreto-Lei 911/69")?.sigla, "DEL-911-1969");
+  assert.equal(normaPorNumero("Lei 8.078/90")?.sigla, "CDC");
+});
