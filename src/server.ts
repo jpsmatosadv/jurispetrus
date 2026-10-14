@@ -22,6 +22,7 @@ import {
 } from "./legislacao/indice.js";
 import { CATALOGO, resolverNorma } from "./legislacao/catalogo.js";
 import { importarNorma } from "./legislacao/importar.js";
+import { ETAPAS, estadoAtualizacao, iniciarAtualizacao, type Etapa } from "./atualizacao.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -72,6 +73,8 @@ export interface OpcoesServidor {
   timeoutFontes?: number;
   /** Claude no servidor para análises estruturadas (opcional). */
   analista?: AnalistaIA | null;
+  /** Expõe a ferramenta atualizar_acervo (instalação local). */
+  permitirAtualizacao?: boolean;
 }
 
 /** Importações de normas em andamento (compartilhadas entre requisições do mesmo processo). */
@@ -605,10 +608,37 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         acervo_local: acervo.estatisticas(),
         legislacao_consolidada: normasIndexadas(acervo),
         pesquisa_ao_vivo: (opts.fontes ?? []).map((f) => ({ fonte: f.nome, tribunais: f.tribunais, consultada_por_padrao: f.padrao })),
-        outras_consultas: ["DataJud/CNJ (metadados e movimentações processuais)", "LexML Brasil (legislação)"],
+        outras_consultas: ["DataJud/CNJ (metadados e movimentações processuais)", "Catálogo de legislação do Senado"],
+        atualizacao: opts.permitirAtualizacao ? estadoAtualizacao() : undefined,
       }),
     ),
   );
+
+  if (opts.permitirAtualizacao) {
+    server.registerTool(
+      "atualizar_acervo",
+      {
+        title: "Atualizar a base local",
+        description:
+          "Atualiza em segundo plano a base instalada neste computador: legislação consolidada, STJ (temas e acórdãos dos " +
+          "últimos meses), enunciados do TST e Banco Nacional de Precedentes do CNJ; com chave da Voyage, também a busca " +
+          "semântica. Use quando o usuário pedir para atualizar a base. A resposta volta na hora; o andamento aparece em listar_fontes.",
+        inputSchema: {
+          etapas: z
+            .array(z.enum(ETAPAS))
+            .optional()
+            .describe("Padrão: todas. 'bnp' é a mais demorada (cerca de 15 min)."),
+        },
+        annotations: { readOnlyHint: false, openWorldHint: true },
+      },
+      protegido("atualizar_acervo", ({ etapas }) =>
+        ok({
+          ...iniciarAtualizacao(acervo, (etapas?.length ? etapas : [...ETAPAS]) as Etapa[], opts.embedder),
+          orientacao: "A atualização roda em segundo plano; a base continua disponível. Consulte o andamento com listar_fontes.",
+        }),
+      ),
+    );
+  }
 
   server.registerPrompt(
     "analise_de_caso",

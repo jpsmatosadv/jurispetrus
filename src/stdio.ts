@@ -13,6 +13,7 @@ const server = criarServidor(acervo, {
   fontes: FONTES,
   timeoutFontes: config.timeoutFontes,
   analista: criarAnalista(),
+  permitirAtualizacao: process.env.JURIS_PERMITIR_ATUALIZACAO === "1",
 });
 await server.connect(new StdioServerTransport());
 console.error(`JurisPetrus MCP (stdio) — ${acervo.estatisticas().total} documentos indexados`);

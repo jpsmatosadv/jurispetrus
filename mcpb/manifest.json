@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-latest.schema.json",
+  "manifest_version": "0.3",
+  "name": "jurispetrus",
+  "display_name": "JurisPetrus — Jurisprudência e Legislação",
+  "version": "0.1.0",
+  "description": "Jurisprudência e legislação brasileiras com fonte oficial verificável: pesquisa em tribunais, legislação atualizada, razão de decidir e análise de caso.",
+  "long_description": "Conecta o Claude a decisões reais e à legislação federal consolidada, rodando neste computador.\n\n- Acervo local: STF (súmulas, súmulas vinculantes, repercussão geral, controle concentrado), STJ (acórdãos e repetitivos), TST (súmulas, OJs, PNs) e precedentes qualificados de TNU, TRFs, TJs e TRTs (Banco Nacional de Precedentes do CNJ).\n- Pesquisa ao vivo nos portais de TJSP, TJSC, TJRJ, TJDFT, TJPR, TJBA, TJES, TJAL, TJAC, TRF2, TRF4, TRF5, TST, CARF e TCU.\n- Legislação atualizada artigo por artigo (CF, códigos e principais leis; outras leis são importadas quando citadas).\n- Verificação de citações, razão de decidir e análise de caso a partir dos fatos.\n\nAs pesquisas apoiam o trabalho do advogado e não o substituem.",
+  "author": { "name": "JP Silva Matos" },
+  "repository": { "type": "git", "url": "https://github.com/jpsmatosadv/jurispetrus" },
+  "icon": "icon.png",
+  "license": "UNLICENSED",
+  "keywords": ["jurisprudência", "legislação", "direito", "STF", "STJ", "tribunais", "precedentes"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/mcpb.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/mcpb.js"],
+      "env": {
+        "NODE_NO_WARNINGS": "1",
+        "JURIS_DIR_DADOS": "${user_config.pasta_dados}",
+        "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
+        "VOYAGE_API_KEY": "${user_config.voyage_api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "pesquisar_jurisprudencia", "description": "Pesquisa acórdãos e precedentes, no acervo e ao vivo nos portais dos tribunais" },
+    { "name": "analisar_caso", "description": "Da narrativa dos fatos à legislação e jurisprudência aplicáveis" },
+    { "name": "extrair_razao_decidir", "description": "Ratio decidendi de um julgado" },
+    { "name": "buscar_legislacao", "description": "Legislação federal atualizada, artigo por artigo" },
+    { "name": "verificar_citacao", "description": "Confere precedentes e a vigência de dispositivos legais" },
+    { "name": "obter_documento", "description": "Íntegra de um documento do acervo" },
+    { "name": "consultar_processo", "description": "Movimentações pelo número CNJ (DataJud)" },
+    { "name": "listar_fontes", "description": "Cobertura da base e andamento da atualização" },
+    { "name": "atualizar_acervo", "description": "Atualiza a base local em segundo plano" }
+  ],
+  "prompts": [
+    { "name": "analise_de_caso", "description": "Dos fatos ao parecer", "arguments": ["fatos"], "text": "Analise o caso a seguir com o JurisPetrus: decomponha os fatos em questões jurídicas, chame analisar_caso, leia os julgados centrais com extrair_razao_decidir, confira os dispositivos com buscar_legislacao e responda como parecer.\n\nFatos:\n${arguments.fatos}" }
+  ],
+  "user_config": {
+    "anthropic_api_key": {
+      "type": "string",
+      "title": "Chave da API do Claude (opcional)",
+      "description": "Ativa a extração automática da razão de decidir e a decomposição dos fatos no servidor. Sem ela, o próprio Claude da conversa faz essas análises.",
+      "sensitive": true,
+      "required": false
+    },
+    "voyage_api_key": {
+      "type": "string",
+      "title": "Chave da Voyage AI (opcional)",
+      "description": "Ativa a busca semântica (por significado). Depois de informar, peça ao Claude para atualizar o acervo com a etapa 'vetorizar'.",
+      "sensitive": true,
+      "required": false
+    },
+    "pasta_dados": {
+      "type": "directory",
+      "title": "Pasta da base de dados",
+      "description": "Onde a base local fica guardada.",
+      "default": "${HOME}/Library/Application Support/JurisPetrus",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": { "node": ">=22.13.0" }
+  }
+}

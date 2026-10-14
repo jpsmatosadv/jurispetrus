@@ -5,6 +5,7 @@
   "main": "dist/http.js",
   "scripts": {
     "build": "tsc",
+    "empacotar:mac": "scripts/empacotar-mac.sh",
     "start": "node dist/http.js",
     "start:stdio": "node dist/stdio.js",
     "dev": "tsx watch src/http.ts",

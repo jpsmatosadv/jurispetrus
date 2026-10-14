@@ -194,7 +194,7 @@ export async function ingerirEspelhos(acervo: Acervo, opts: OpcoesIngestao = {})
   return total;
 }
 
-export async function ingerirTemas(acervo: Acervo, opts: OpcoesIngestao = {}): Promise<number> {
+export async function ingerirTemas(acervo: Acervo, opts: Pick<OpcoesIngestao, "log"> = {}): Promise<number> {
   const log = opts.log ?? console.error;
   const rec = (await recursos("precedentes-qualificados")).find((r) => /^temas\.csv$/i.test(r.name));
   if (!rec) throw new Error("Recurso Temas.csv não encontrado no portal do STJ.");

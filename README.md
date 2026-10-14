@@ -129,7 +129,21 @@ A ingestão é incremental. Agende `npm run ingest && npm run vetorizar` uma vez
 claude mcp add --transport http jurispetrus https://seu-dominio/mcp --header "Authorization: Bearer SUA_CHAVE"
 ```
 
-### Claude Desktop (local, sem servidor)
+### Claude Desktop no Mac, sem hospedagem (pacote .mcpb)
+
+O jeito mais simples: tudo roda no seu computador, sem servidor nem URL pública.
+
+1. Abra o arquivo `jurispetrus-mac.mcpb` com o Claude Desktop (duplo clique, ou arraste para Configurações → Extensões).
+2. Na tela de instalação, as chaves são opcionais: a do Claude ativa a análise automática no servidor; a da Voyage ativa a busca semântica.
+3. Pronto. Na primeira execução, a base inicial (STF, STJ, TST, precedentes do CNJ e legislação) é copiada para `~/Library/Application Support/JurisPetrus`.
+
+Para atualizar a base, peça ao Claude: "atualize o acervo do JurisPetrus". A ferramenta `atualizar_acervo` roda em segundo plano (legislação, STJ, TST e BNP; com chave da Voyage, também a vetorização), e o andamento aparece em `listar_fontes`.
+
+Requer Node.js 22.13 ou superior. O Claude Desktop traz Node embutido; se a extensão avisar que a versão é antiga, instale o Node 22 (nodejs.org) e desative "Usar Node.js embutido" nas configurações de extensões. O pacote não é assinado, então o Claude Desktop pode pedir confirmação na instalação.
+
+Para gerar o pacote a partir do código: `npm run ingest` (monta a base) e `npm run empacotar:mac` (gera `pacotes/jurispetrus-mac.mcpb`, com binários para Apple Silicon e Intel).
+
+### Claude Desktop (local, configuração manual)
 
 Em `claude_desktop_config.json`:
 
@@ -190,6 +204,8 @@ src/
   server.ts          ferramentas MCP e instruções ao modelo
   http.ts            transporte Streamable HTTP, autenticação e cota
   stdio.ts           transporte stdio (Claude Desktop local)
+  mcpb.ts            ponto de entrada do pacote .mcpb (pasta de dados e base inicial)
+  atualizacao.ts     atualização da base em segundo plano (ferramenta atualizar_acervo)
   db.ts              esquema SQLite + índice FTS5
   search.ts          ranqueamento (BM25 + autoridade + atualidade)
   citation.ts        interpretação e verificação de citações
