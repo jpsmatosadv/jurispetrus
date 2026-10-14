@@ -40,14 +40,14 @@ for arq in sqlite-vec-darwin-arm64 sqlite-vec-darwin-x64; do
 done
 rm -rf "$PASTA/node_modules/sqlite-vec-linux-"* "$PASTA/node_modules/sqlite-vec-windows-"*
 
-echo "» base inicial (compactada, sem cache de análises)"
+echo "» base inicial (compactada, sem cache de análises e sem o índice textual, refeito na 1ª execução)"
 node --no-warnings -e "
   const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync('$BASE', { readOnly: true });
   db.exec(\"VACUUM INTO '$PASTA/data/acervo-inicial.db'\");
   db.close();
   const c = new DatabaseSync('$PASTA/data/acervo-inicial.db');
-  c.exec('DELETE FROM analises; PRAGMA journal_mode = DELETE; VACUUM;');
+  c.exec(\"DELETE FROM analises; INSERT INTO documentos_fts(documentos_fts) VALUES('delete-all'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('delete-all'); INSERT OR REPLACE INTO meta (chave, valor) VALUES ('indice_textual_pendente', '1'); PRAGMA journal_mode = DELETE; VACUUM;\");
   c.close();
 "
 

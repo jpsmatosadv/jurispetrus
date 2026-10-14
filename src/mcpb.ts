@@ -7,6 +7,7 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const versao = process.versions.node.split(".").map(Number);
 if (versao[0] < 22 || (versao[0] === 22 && versao[1] < 13)) {
@@ -25,6 +26,19 @@ const inicial = join(aqui, "..", "data", "acervo-inicial.db");
 if (!existsSync(base) && existsSync(inicial)) {
   copyFileSync(inicial, base);
   console.error(`Base inicial copiada para ${base}`);
+}
+// A base inicial vem sem o índice textual (para caber no pacote); ele é refeito aqui, em ~1 s.
+if (existsSync(base)) {
+  const db = new DatabaseSync(base);
+  const pendente = db.prepare("SELECT 1 FROM meta WHERE chave = 'indice_textual_pendente'").get();
+  if (pendente) {
+    db.exec(
+      "INSERT INTO documentos_fts(documentos_fts) VALUES('rebuild'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('rebuild'); " +
+        "DELETE FROM meta WHERE chave = 'indice_textual_pendente';",
+    );
+    console.error("Índice textual da base inicial reconstruído");
+  }
+  db.close();
 }
 process.env.JURIS_DB_PATH = base;
 process.env.JURIS_PERMITIR_ATUALIZACAO = "1";
