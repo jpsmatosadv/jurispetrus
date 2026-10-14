@@ -2,13 +2,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Acervo } from "./db.js";
-import { pesquisar, identificacao } from "./search.js";
+import { pesquisar, identificacao, type FiltrosPesquisa } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
 import { consultarProcesso, cnjValido, formatarCnj } from "./sources/datajud.js";
 import { buscarLegislacao } from "./sources/lexml.js";
 import type { Embedder } from "./embeddings.js";
 import type { FonteAoVivo } from "./fontes/tipos.js";
 import { expandirTribunais, pesquisarAoVivo, type RelatorioFonte } from "./federado.js";
+import { baixarInteiroTeor, extrairEstrutura, temInteiroTeorBaixavel } from "./ratio.js";
+import type { AnalistaIA, Questoes, Ratio } from "./ia.js";
+import {
+  interpretarCitacaoLegal,
+  obterDispositivo,
+  pesquisarDispositivos,
+  vizinhos,
+  normasIndexadas,
+  type CitacaoLegal,
+} from "./legislacao/indice.js";
+import { resolverNorma } from "./legislacao/catalogo.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -25,6 +36,10 @@ STJ (acórdãos, súmulas e repetitivos) e os precedentes qualificados de TST, T
 Para jurisprudência comum de um tribunal (TJs, TRFs, TST, CARF, TCU), informe o tribunal em 'tribunais':
 a pesquisa consulta o portal oficial dele em tempo real. Se o usuário pedir "tribunais estaduais", use 'ESTADUAIS'.
 Quando um portal estiver indisponível, diga isso ao usuário em vez de concluir que não há julgados.
+
+Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jurídicas e chame analisar_caso com elas;
+depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
+Para legislação, use buscar_legislacao (texto consolidado vigente, artigo por artigo) e nunca cite artigo de memória.
 
 Regras de uso:
 - Cite apenas julgados retornados pelas ferramentas, com tribunal, classe/número, órgão, relator, data e link da fonte.
@@ -53,6 +68,8 @@ export interface OpcoesServidor {
   /** Conectores consultados ao vivo (tribunais estaduais, TRFs, CARF, TCU...). */
   fontes?: FonteAoVivo[];
   timeoutFontes?: number;
+  /** Claude no servidor para análises estruturadas (opcional). */
+  analista?: AnalistaIA | null;
 }
 
 export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpServer {
@@ -78,6 +95,29 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       console.error("Falha ao vetorizar consulta:", (e as Error).message);
       return null;
     }
+  };
+
+  /** Pesquisa no acervo e, se pedido, nos portais ao vivo dos tribunais filtrados. */
+  const buscarJurisprudencia = async (entrada: FiltrosPesquisa, aoVivo: boolean) => {
+    const args = { ...entrada, tribunais: expandirTribunais(entrada.tribunais, tribunaisConhecidos()) };
+    const [fontes, vetorConsulta] = await Promise.all([
+      aoVivo && opts.fontes?.length && (args.pagina ?? 1) === 1
+        ? pesquisarAoVivo(acervo, opts.fontes, args, {
+            timeoutMs: opts.timeoutFontes ?? 25_000,
+            fetchImpl: opts.fetchImpl,
+            embedder: opts.embedder,
+          })
+        : Promise.resolve([] as RelatorioFonte[]),
+      vetorDaConsulta(args.consulta),
+    ]);
+    return { r: pesquisar(acervo, args, { vetorConsulta }), fontes };
+  };
+
+  const avisoFalhas = (fontes: RelatorioFonte[]) => {
+    const falhas = fontes.filter((f) => f.status !== "ok");
+    return falhas.length
+      ? `Fontes indisponíveis agora: ${falhas.map((f) => f.tribunais.join("/")).join(", ")}. A pesquisa nelas pode estar incompleta.`
+      : undefined;
   };
 
   /** Envolve o handler com o controle de cota e tratamento de erros. */
@@ -127,19 +167,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, ...entrada }) => {
-      const args = { ...entrada, tribunais: expandirTribunais(entrada.tribunais, tribunaisConhecidos()) };
-      const [fontes, vetorConsulta] = await Promise.all([
-        ao_vivo && opts.fontes?.length && (args.pagina ?? 1) === 1
-          ? pesquisarAoVivo(acervo, opts.fontes, args, {
-              timeoutMs: opts.timeoutFontes ?? 20_000,
-              fetchImpl: opts.fetchImpl,
-              embedder: opts.embedder,
-            })
-          : Promise.resolve([] as RelatorioFonte[]),
-        vetorDaConsulta(args.consulta),
-      ]);
-      const r = pesquisar(acervo, args, { vetorConsulta });
-      const falhas = fontes.filter((f) => f.status !== "ok");
+      const { r, fontes } = await buscarJurisprudencia(entrada, ao_vivo);
       if (!r.resultados.length) {
         return ok({
           estado: "SEM_RESULTADO",
@@ -147,14 +175,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
           fontes_consultadas: fontes,
         });
       }
-      return ok({
-        estado: "ENCONTRADO",
-        ...r,
-        fontes_consultadas: fontes.length ? fontes : undefined,
-        aviso: falhas.length
-          ? `Fontes indisponíveis agora: ${falhas.map((f) => f.tribunais.join("/")).join(", ")}. A pesquisa nelas pode estar incompleta.`
-          : undefined,
-      });
+      return ok({ estado: "ENCONTRADO", ...r, fontes_consultadas: fontes.length ? fontes : undefined, aviso: avisoFalhas(fontes) });
     }),
   );
 
@@ -200,11 +221,101 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
   );
 
   server.registerTool(
+    "extrair_razao_decidir",
+    {
+      title: "Extrair razão de decidir",
+      description:
+        "Identifica a ratio decidendi de um julgado (id retornado na pesquisa): questão jurídica, regra decisiva, fundamentos " +
+        "determinantes, obiter dicta, fatos materiais, dispositivos e precedentes citados. Usa a tese firmada nos precedentes " +
+        "qualificados e a estrutura da ementa padrão do CNJ (Recomendação 154/2024) quando existe; quando possível, baixa o " +
+        "inteiro teor do portal de origem. Se a análise automática não estiver ativa, devolve o texto para você identificar a ratio.",
+      inputSchema: {
+        id: z.string().describe("Identificador retornado por pesquisar_jurisprudencia"),
+        usar_ia: z.boolean().optional().describe("Usa a análise automática no servidor, se configurada (padrão: sim)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    protegido("extrair_razao_decidir", async ({ id, usar_ia = true }) => {
+      let d = acervo.obter(id);
+      if (!d) return erro(`Documento '${id}' não encontrado no acervo.`);
+
+      // Ementa sozinha raramente basta: tenta o inteiro teor no portal de origem.
+      let inteiroTeorBaixado = false;
+      if ((d.inteiro_teor?.length ?? 0) < 3000 && temInteiroTeorBaixavel(d.fonte_url)) {
+        try {
+          const texto = await baixarInteiroTeor(d.fonte_url!, opts.fetchImpl);
+          if (texto) {
+            acervo.gravarInteiroTeor(d.id, texto);
+            d = { ...d, inteiro_teor: texto };
+            inteiroTeorBaixado = true;
+          }
+        } catch {
+          // segue com a ementa
+        }
+      }
+
+      const estrutura = extrairEstrutura(d);
+      const cabecalho = {
+        id: d.id,
+        identificacao: identificacao(d),
+        tribunal: d.tribunal,
+        orgao: d.orgao,
+        relator: d.relator,
+        data_julgamento: d.data_julgamento,
+        autoridade: d.autoridade,
+        situacao: d.situacao,
+        fonte_url: d.fonte_url,
+        texto_analisado: d.inteiro_teor && d.inteiro_teor.length > 3000 ? "inteiro_teor" : "ementa",
+        inteiro_teor_baixado_agora: inteiroTeorBaixado || undefined,
+      };
+
+      let analise: (Ratio & { modelo: string }) | null = null;
+      let avisoIa: string | undefined;
+      if (usar_ia && opts.analista && estrutura.metodo !== "tese_firmada") {
+        const guardada = acervo.lerAnalise<Ratio>(d.id, "ratio");
+        if (guardada && !inteiroTeorBaixado) {
+          analise = { ...guardada.conteudo, modelo: guardada.modelo };
+        } else {
+          try {
+            const texto = [d.titulo, d.ementa && `EMENTA: ${d.ementa}`, d.tese && `TESE: ${d.tese}`, d.inteiro_teor && `TEXTO: ${d.inteiro_teor}`]
+              .filter(Boolean)
+              .join("\n\n")
+              .slice(0, 400_000);
+            const r = await opts.analista.extrairRatio(texto);
+            acervo.gravarAnalise(d.id, "ratio", opts.analista.modelo, r);
+            analise = { ...r, modelo: opts.analista.modelo };
+          } catch (e) {
+            avisoIa = `Análise automática indisponível: ${(e as Error).message}`;
+          }
+        }
+      }
+
+      const precisaLeitura = !analise && estrutura.metodo === "sem_estrutura";
+      return ok({
+        documento: cabecalho,
+        estrutura_da_ementa: estrutura.metodo === "sem_estrutura" ? undefined : estrutura,
+        analise_ia: analise ?? undefined,
+        aviso: avisoIa,
+        texto: precisaLeitura || (!analise && estrutura.metodo === "ementa_padrao_cnj")
+          ? { ementa: d.ementa, inteiro_teor: d.inteiro_teor?.slice(0, 15_000), continua: (d.inteiro_teor?.length ?? 0) > 15_000 }
+          : undefined,
+        orientacao: analise
+          ? "A ratio acima foi extraída automaticamente do texto indicado em texto_analisado; confira com o inteiro teor antes de citar."
+          : estrutura.metodo === "tese_firmada"
+            ? "Precedente qualificado: a tese firmada é a ratio decidendi."
+            : "Identifique a ratio a partir do texto: a regra necessária e suficiente para o resultado, os fundamentos determinantes " +
+              "(art. 489, § 1º, V, CPC), os obiter dicta e os fatos materiais. Se só houver ementa, diga que a análise é preliminar.",
+      });
+    }),
+  );
+
+  server.registerTool(
     "verificar_citacao",
     {
       title: "Verificar citação",
       description:
-        "Confirma se um precedente citado existe (ex.: 'REsp 1.990.285/SP', 'Tema 988/STJ', ou número CNJ). " +
+        "Confirma se um precedente citado existe (ex.: 'REsp 1.990.285/SP', 'Tema 988/STJ', ou número CNJ) ou se um " +
+          "dispositivo legal está vigente (ex.: 'art. 1.022 do CPC': VIGENTE / REVOGADO). " +
         "Retorna CONFIRMADO, DIVERGENCIA (existe, mas com dado diferente), NAO_ENCONTRADO ou NAO_RECONHECIDA. " +
         "Use antes de incluir em uma peça qualquer julgado que não tenha vindo da pesquisa.",
       inputSchema: {
@@ -230,7 +341,17 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
           return ok({ status: "INDISPONIVEL", observacao: `Não foi possível consultar o DataJud agora: ${(e as Error).message}. Não afirme que o processo não existe.` });
         }
       }
-      return ok(verificarCitacao(acervo, citacao, relator));
+      const r = verificarCitacao(acervo, citacao, relator);
+      const legal = r.status === "NAO_RECONHECIDA" ? interpretarCitacaoLegal(citacao) : null;
+      if (legal) {
+        const d = dispositivoCitado(legal);
+        return ok(
+          d
+            ? { status: d.revogado ? "REVOGADO" : "VIGENTE", dispositivo: d }
+            : { status: "NAO_INDEXADO", citacao: legal, observacao: "A norma ou o artigo não está no índice de legislação consolidada." },
+        );
+      }
+      return ok(r);
     }),
   );
 
@@ -255,29 +376,177 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     }),
   );
 
+  /** Dispositivo exato + vizinhos, para citações como "art. 14 do CDC". */
+  const dispositivoCitado = (c: CitacaoLegal) => {
+    const d = obterDispositivo(acervo, c.norma, c.artigo);
+    if (!d) return null;
+    return {
+      id: d.id,
+      norma: d.norma,
+      norma_nome: d.norma_nome,
+      rotulo: `${d.rotulo} (${d.norma})`,
+      caminho: d.caminho,
+      texto: d.texto,
+      revogado: !!d.revogado,
+      fonte_url: d.fonte_url,
+      atualizado_em: d.atualizado_em,
+    };
+  };
+
+  const vetorLegislacao = async (consulta: string) => (acervo.temVetoresLegislacao ? vetorDaConsulta(consulta) : null);
+
   server.registerTool(
     "buscar_legislacao",
     {
-      title: "Buscar legislação (LexML)",
+      title: "Buscar legislação atualizada",
       description:
-        "Pesquisa leis, decretos e demais normas federais, estaduais e municipais no LexML Brasil. Retorna título, ementa, data e link (URN).",
+        "Pesquisa a legislação federal consolidada (texto vigente, artigo por artigo): Constituição, códigos e as principais leis. " +
+        "Aceita uma citação exata ('art. 14 do CDC', 'CC, art. 186', 'art. 5º, X, da CF') ou um assunto ('responsabilidade do " +
+        "fornecedor por defeito do serviço'). Dispositivos revogados vêm marcados. Normas fora do índice são buscadas no LexML.",
       inputSchema: {
-        consulta: z.string().min(2).describe("Assunto ou nome da norma, ex.: 'proteção de dados pessoais'"),
-        tipo: z.string().optional().describe("Tipo de documento, ex.: 'Lei', 'Decreto', 'Lei Complementar'"),
-        ano: z.number().int().min(1800).max(2100).optional(),
+        consulta: z.string().min(2).describe("Citação de dispositivo ou assunto"),
+        normas: z.array(z.string()).optional().describe("Restringe a normas, ex.: ['CDC','CC'] ou ['Código Civil']"),
         limite: z.number().int().min(1).max(30).optional(),
+        incluir_revogados: z.boolean().optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("buscar_legislacao", async ({ consulta, tipo, ano, limite }) => {
+    protegido("buscar_legislacao", async ({ consulta, normas, limite, incluir_revogados }) => {
+      const citacao = interpretarCitacaoLegal(consulta);
+      if (citacao) {
+        const d = dispositivoCitado(citacao);
+        if (d) {
+          const doc = obterDispositivo(acervo, citacao.norma, citacao.artigo)!;
+          return ok({
+            estado: "ENCONTRADO",
+            dispositivo: d,
+            contexto: vizinhos(acervo, doc).map((v) => ({ rotulo: v.rotulo, texto: v.texto.slice(0, 600), revogado: !!v.revogado })),
+            aviso: d.revogado ? "Dispositivo revogado: não o cite como direito vigente." : undefined,
+          });
+        }
+      }
+      const resultados = pesquisarDispositivos(acervo, consulta, {
+        normas,
+        limite,
+        incluirRevogados: incluir_revogados,
+        vetor: await vetorLegislacao(consulta),
+      });
+      if (resultados.length) {
+        return ok({ estado: "ENCONTRADO", fonte: "texto consolidado indexado", resultados, normas_indexadas: undefined });
+      }
       try {
-        return ok({ fonte: "LexML Brasil", ...(await buscarLegislacao(consulta, { tipo, ano, limite, fetchImpl: opts.fetchImpl })) });
+        const lexml = await buscarLegislacao(consulta, { limite, fetchImpl: opts.fetchImpl });
+        return ok({ estado: lexml.normas.length ? "ENCONTRADO" : "SEM_RESULTADO", fonte: "LexML Brasil (só identificação da norma)", ...lexml });
       } catch (e) {
         return ok({
-          estado: "INDISPONIVEL",
-          mensagem: `${(e as Error).message} Não invente dispositivos legais; oriente o usuário a conferir no Planalto (https://www.planalto.gov.br/legislacao).`,
+          estado: citacao ? "NAO_INDEXADO" : "SEM_RESULTADO",
+          mensagem:
+            `Nada encontrado no índice de legislação consolidada${citacao ? ` para ${citacao.norma}, art. ${citacao.artigo}` : ""}. ` +
+            "Não invente o texto do dispositivo; oriente o usuário a conferir no Planalto (https://www.planalto.gov.br/legislacao).",
         });
       }
+    }),
+  );
+
+  server.registerTool(
+    "analisar_caso",
+    {
+      title: "Analisar caso (legislação e jurisprudência aplicáveis)",
+      description:
+        "Recebe a narrativa dos fatos e devolve, para cada questão jurídica, os dispositivos legais vigentes, os precedentes " +
+        "qualificados (súmulas, temas, IRDR) e a jurisprudência pertinente, com links oficiais. Antes de chamar, decomponha a " +
+        "narrativa em 'questoes' (questão neutra + termos de busca + normas prováveis); sem 'questoes', o servidor tenta " +
+        "identificá-las sozinho. Informe 'tribunais' (ex.: ['STJ','TJSP']) para incluir a jurisprudência local ao vivo.",
+      inputSchema: {
+        narrativa: z.string().min(30).describe("Narrativa dos fatos, como contada pelo cliente"),
+        questoes: z
+          .array(
+            z.object({
+              questao: z.string().describe("Questão jurídica controvertida, formulada de modo neutro"),
+              termos_jurisprudencia: z.string().optional().describe("Consulta curta em linguagem de ementa"),
+              termos_legislacao: z.string().optional().describe("Consulta curta para os dispositivos aplicáveis"),
+              normas_provaveis: z.array(z.string()).optional().describe("Ex.: ['CDC, art. 14', 'CC, art. 186']"),
+            }),
+          )
+          .max(8)
+          .optional(),
+        tribunais: z.array(z.string()).optional().describe("Tribunais de interesse; aceita ESTADUAIS, FEDERAIS etc."),
+        limite_por_questao: z.number().int().min(1).max(10).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    protegido("analisar_caso", async ({ narrativa, questoes, tribunais, limite_por_questao = 5 }) => {
+      let identificadas: Questoes | null = null;
+      let avisoIa: string | undefined;
+      if (!questoes?.length && opts.analista) {
+        try {
+          identificadas = await opts.analista.identificarQuestoes(narrativa);
+        } catch (e) {
+          avisoIa = `Identificação automática das questões indisponível: ${(e as Error).message}`;
+        }
+      }
+      const lista =
+        questoes?.length
+          ? questoes
+          : identificadas?.questoes ?? [{ questao: "Questões não decompostas: pesquisa feita sobre a narrativa inteira", termos_jurisprudencia: narrativa.slice(0, 500), termos_legislacao: narrativa.slice(0, 500) }];
+      const alvo = tribunais?.length ? tribunais : identificadas?.tribunais_sugeridos;
+
+      const todasFontes: RelatorioFonte[] = [];
+      const analises = await Promise.all(
+        lista.map(async (q) => {
+          const termosJ = q.termos_jurisprudencia || q.questao;
+          const termosL = q.termos_legislacao || q.questao;
+          const citadas = (q.normas_provaveis ?? [])
+            .map((n) => interpretarCitacaoLegal(n))
+            .filter((c): c is CitacaoLegal => c !== null)
+            .map(dispositivoCitado)
+            .filter((d): d is NonNullable<ReturnType<typeof dispositivoCitado>> => d !== null);
+          const normasFiltro = [...new Set((q.normas_provaveis ?? []).map((n) => resolverNorma(n.split(",")[0])?.sigla).filter(Boolean))] as string[];
+          const [porAssunto, qualificados, local] = await Promise.all([
+            vetorLegislacao(termosL).then((vetor) =>
+              pesquisarDispositivos(acervo, termosL, { normas: normasFiltro.length ? normasFiltro : undefined, limite: limite_por_questao, vetor }),
+            ),
+            buscarJurisprudencia({ consulta: termosJ, autoridade_minima: "B", limite: limite_por_questao }, false),
+            buscarJurisprudencia({ consulta: termosJ, tribunais: alvo, limite: limite_por_questao }, !!alvo?.length),
+          ]);
+          todasFontes.push(...local.fontes);
+          const legislacao = [...citadas.map((d) => ({ ...d, origem: "citada" })), ...porAssunto.map((d) => ({ ...d, origem: "pesquisa" }))].filter(
+            (d, i, arr) => arr.findIndex((x) => x.id === d.id) === i,
+          );
+          const resumo = (x: (typeof local.r.resultados)[number]) => ({
+            id: x.id,
+            identificacao: x.identificacao,
+            autoridade: x.autoridade,
+            orgao: x.orgao,
+            relator: x.relator,
+            data_julgamento: x.data_julgamento,
+            situacao: x.situacao,
+            tese_ou_trecho: (x.tese ?? x.trecho).slice(0, 500),
+            fonte_url: x.fonte_url,
+          });
+          const idsQualificados = new Set(qualificados.r.resultados.map((x) => x.id));
+          return {
+            questao: q.questao,
+            legislacao: legislacao.slice(0, limite_por_questao + citadas.length),
+            precedentes_qualificados: qualificados.r.resultados.map(resumo),
+            jurisprudencia: local.r.resultados.filter((x) => !idsQualificados.has(x.id)).map(resumo),
+          };
+        }),
+      );
+
+      return ok({
+        resumo_dos_fatos: identificadas?.resumo_dos_fatos,
+        ramos_do_direito: identificadas?.ramos_do_direito,
+        questoes_identificadas_por: questoes?.length ? "usuario" : identificadas ? `ia (${opts.analista!.modelo})` : "nenhum (narrativa inteira)",
+        analise: analises,
+        fatos_a_esclarecer: identificadas?.fatos_a_esclarecer,
+        fontes_consultadas: todasFontes.length ? todasFontes : undefined,
+        aviso: [avisoIa, avisoFalhas(todasFontes)].filter(Boolean).join(" ") || undefined,
+        orientacao:
+          "Para cada questão, confirme a pertinência lendo os dispositivos e as teses (use obter_documento e extrair_razao_decidir " +
+          "nos julgados centrais). Fundamente com A e B antes de D, aponte divergências e o que depende de fatos a esclarecer. " +
+          "Não cite dispositivo ou julgado que não esteja nesta resposta ou em outra ferramenta.",
+      });
     }),
   );
 
@@ -292,10 +561,39 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     protegido("listar_fontes", () =>
       ok({
         acervo_local: acervo.estatisticas(),
+        legislacao_consolidada: normasIndexadas(acervo),
         pesquisa_ao_vivo: (opts.fontes ?? []).map((f) => ({ fonte: f.nome, tribunais: f.tribunais, consultada_por_padrao: f.padrao })),
         outras_consultas: ["DataJud/CNJ (metadados e movimentações processuais)", "LexML Brasil (legislação)"],
       }),
     ),
+  );
+
+  server.registerPrompt(
+    "analise_de_caso",
+    {
+      title: "Análise de caso a partir dos fatos",
+      description: "Roteiro para indicar a legislação e a jurisprudência aplicáveis a uma narrativa de fatos.",
+      argsSchema: { fatos: z.string().describe("Narrativa dos fatos") },
+    },
+    ({ fatos }) => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text:
+              `Fatos:\n${fatos}\n\n` +
+              "1. Decomponha os fatos em questões jurídicas controvertidas (neutras), com termos de busca e normas prováveis.\n" +
+              "2. Chame analisar_caso com essas questões e os tribunais pertinentes.\n" +
+              "3. Para cada julgado central, use extrair_razao_decidir e verifique se os fatos materiais se aplicam ao caso (distinguishing).\n" +
+              "4. Confira cada dispositivo com buscar_legislacao (texto vigente).\n" +
+              "5. Responda como parecer, em prosa: enquadramento jurídico de cada questão, legislação aplicável (transcrevendo o " +
+              "essencial do dispositivo), precedentes por ordem de autoridade (com tribunal, número, órgão, relator, data e link), " +
+              "pontos controvertidos, fatos a esclarecer e próximos passos. Indique ao final as limitações da pesquisa.",
+          },
+        },
+      ],
+    }),
   );
 
   server.registerPrompt(

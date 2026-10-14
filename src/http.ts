@@ -7,6 +7,7 @@ import { Acervo } from "./db.js";
 import { criarServidor } from "./server.js";
 import { criarEmbedder, type Embedder } from "./embeddings.js";
 import { FONTES } from "./fontes/index.js";
+import { criarAnalista } from "./ia.js";
 
 /** Contador de chamadas por chave e mês, em memória (reinicia junto com o processo). */
 export class Cota {
@@ -42,6 +43,7 @@ export function criarApp(acervo: Acervo, opts = config, embedder: Embedder | nul
     allowedHosts: opts.allowedHosts.length ? opts.allowedHosts : undefined,
   });
   const cota = new Cota(opts.cotaMensal);
+  const analista = criarAnalista();
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, documentos: acervo.estatisticas().total });
@@ -69,6 +71,7 @@ export function criarApp(acervo: Acervo, opts = config, embedder: Embedder | nul
       embedder,
       fontes: FONTES,
       timeoutFontes: opts.timeoutFontes,
+      analista,
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {

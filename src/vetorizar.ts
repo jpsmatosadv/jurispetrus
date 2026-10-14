@@ -18,5 +18,14 @@ export async function vetorizarPendentes(
     feitos += pendentes.length;
     opts.log?.(`vetorizados ${feitos}`);
   }
+  // Dispositivos legais (mesmo modelo e mesma dimensão)
+  while (feitos < maximo) {
+    const pendentes = acervo.pendentesDeVetorLegislacao(Math.min(lote, maximo - feitos));
+    if (!pendentes.length) break;
+    const vetores = await embedder.vetorizar(pendentes.map((p) => p.texto.slice(0, 6000)), "documento");
+    acervo.salvarVetoresLegislacao(pendentes.map((p, i) => ({ rowid: p.rowid, vetor: vetores[i] })));
+    feitos += pendentes.length;
+    opts.log?.(`vetorizados ${feitos} (com dispositivos legais)`);
+  }
   return feitos;
 }

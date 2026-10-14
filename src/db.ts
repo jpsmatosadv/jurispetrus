@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createRequire } from "node:module";
 
+import { SCHEMA_LEGISLACAO } from "./legislacao/indice.js";
+
 const require = createRequire(import.meta.url);
 
 /**
@@ -90,6 +92,16 @@ END;
 
 CREATE TABLE IF NOT EXISTS meta (chave TEXT PRIMARY KEY, valor TEXT NOT NULL);
 
+-- Análises geradas por IA (ex.: razão de decidir), guardadas para não repetir o custo.
+CREATE TABLE IF NOT EXISTS analises (
+  doc_id TEXT NOT NULL,
+  tipo TEXT NOT NULL,
+  modelo TEXT NOT NULL,
+  conteudo TEXT NOT NULL,
+  criado_em TEXT NOT NULL,
+  PRIMARY KEY (doc_id, tipo)
+);
+
 CREATE TABLE IF NOT EXISTS ingestoes (
   fonte TEXT NOT NULL,
   recurso TEXT NOT NULL,
@@ -121,6 +133,7 @@ export class Acervo {
     require("sqlite-vec").load(this.db);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
+    this.db.exec(SCHEMA_LEGISLACAO);
     const meta = this.lerMeta("vetor_dimensoes");
     if (meta) this.dimensoesVetor = Number(meta);
   }
@@ -144,9 +157,10 @@ export class Acervo {
       throw new Error(`O índice vetorial foi criado com '${atual}'. Rode 'npm run vetorizar -- --recriar' para trocar para '${modeloId}'.`);
     }
     if (recriar || (atual && atual !== modeloId)) {
-      this.db.exec("DROP TABLE IF EXISTS documentos_vec; DELETE FROM meta WHERE chave LIKE 'vetor_%';");
+      this.db.exec("DROP TABLE IF EXISTS documentos_vec; DROP TABLE IF EXISTS dispositivos_vec; DELETE FROM meta WHERE chave LIKE 'vetor_%';");
     }
     this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documentos_vec USING vec0(embedding float[${dimensoes}] distance_metric=cosine)`);
+    this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS dispositivos_vec USING vec0(embedding float[${dimensoes}] distance_metric=cosine)`);
     this.gravarMeta("vetor_modelo", modeloId);
     this.gravarMeta("vetor_dimensoes", String(dimensoes));
     this.dimensoesVetor = dimensoes;
@@ -189,6 +203,43 @@ export class Acervo {
       .all(vetor, k) as unknown as VizinhoVetorial[];
   }
 
+  get temVetoresLegislacao(): boolean {
+    return this.temVetores;
+  }
+
+  /** Dispositivos legais ainda sem vetor. */
+  pendentesDeVetorLegislacao(limite: number): { rowid: number; texto: string }[] {
+    return this.db
+      .prepare(
+        `SELECT d.rowid AS rowid, d.norma_nome || ' — ' || d.rotulo || COALESCE(' (' || d.caminho || ')', '') || ': ' || d.texto AS texto
+         FROM dispositivos d WHERE NOT EXISTS (SELECT 1 FROM dispositivos_vec v WHERE v.rowid = d.rowid) LIMIT ?`,
+      )
+      .all(limite) as { rowid: number; texto: string }[];
+  }
+
+  salvarVetoresLegislacao(itens: { rowid: number; vetor: Float32Array }[]): void {
+    const del = this.db.prepare("DELETE FROM dispositivos_vec WHERE rowid = ?");
+    const ins = this.db.prepare("INSERT INTO dispositivos_vec (rowid, embedding) VALUES (?, ?)");
+    this.db.exec("BEGIN");
+    try {
+      for (const { rowid, vetor } of itens) {
+        del.run(BigInt(rowid));
+        ins.run(BigInt(rowid), vetor);
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  vizinhosLegislacao(vetor: Float32Array, k: number): VizinhoVetorial[] {
+    if (!this.temVetores) return [];
+    return this.db
+      .prepare("SELECT rowid, distance AS distancia FROM dispositivos_vec WHERE embedding MATCH ? AND k = ?")
+      .all(vetor, k) as unknown as VizinhoVetorial[];
+  }
+
   contarVetores(): number {
     if (!this.temVetores) return 0;
     return (this.db.prepare("SELECT COUNT(*) n FROM documentos_vec").get() as { n: number }).n;
@@ -209,6 +260,27 @@ export class Acervo {
       throw e;
     }
     return docs.length;
+  }
+
+  lerAnalise<T>(docId: string, tipo: string): { modelo: string; conteudo: T; criado_em: string } | null {
+    const r = this.db.prepare("SELECT modelo, conteudo, criado_em FROM analises WHERE doc_id = ? AND tipo = ?").get(docId, tipo) as
+      | { modelo: string; conteudo: string; criado_em: string }
+      | undefined;
+    return r ? { ...r, conteudo: JSON.parse(r.conteudo) as T } : null;
+  }
+
+  gravarAnalise(docId: string, tipo: string, modelo: string, conteudo: unknown): void {
+    this.db
+      .prepare(
+        `INSERT INTO analises (doc_id, tipo, modelo, conteudo, criado_em) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(doc_id, tipo) DO UPDATE SET modelo = excluded.modelo, conteudo = excluded.conteudo, criado_em = excluded.criado_em`,
+      )
+      .run(docId, tipo, modelo, JSON.stringify(conteudo), new Date().toISOString());
+  }
+
+  /** Atualiza só o texto integral de um documento (ex.: inteiro teor baixado depois). */
+  gravarInteiroTeor(id: string, texto: string): void {
+    this.db.prepare("UPDATE documentos SET inteiro_teor = ? WHERE id = ?").run(texto, id);
   }
 
   /** Mapeia ids de documentos para o rowid interno (usado pelo índice vetorial). */

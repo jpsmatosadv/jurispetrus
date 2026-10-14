@@ -4,6 +4,7 @@ import { Acervo } from "./db.js";
 import { criarServidor } from "./server.js";
 import { criarEmbedder } from "./embeddings.js";
 import { FONTES } from "./fontes/index.js";
+import { criarAnalista } from "./ia.js";
 
 const acervo = new Acervo(config.dbPath);
 const server = criarServidor(acervo, {
@@ -11,6 +12,7 @@ const server = criarServidor(acervo, {
   embedder: criarEmbedder(config.embeddings),
   fontes: FONTES,
   timeoutFontes: config.timeoutFontes,
+  analista: criarAnalista(),
 });
 await server.connect(new StdioServerTransport());
 console.error(`JurisPetrus MCP (stdio) — ${acervo.estatisticas().total} documentos indexados`);
