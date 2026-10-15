@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Acervo } from "./db.js";
 import { pesquisar, identificacao, type FiltrosPesquisa } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
-import { consultarProcesso, cnjValido, formatarCnj } from "./sources/datajud.js";
+import { consultarProcesso, cnjValido, formatarCnj, type ProcessoDataJud } from "./sources/datajud.js";
 import { pesquisarSigen } from "./legislacao/fontes.js";
 import type { Embedder } from "./embeddings.js";
 import type { FonteAoVivo } from "./fontes/tipos.js";
@@ -46,6 +46,9 @@ Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jur
 depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
 Para legislação, use buscar_legislacao (texto consolidado vigente, artigo por artigo) e nunca cite artigo de memória.
 Para a finalidade de uma norma ou a "vontade do legislador", use historico_legislativo (justificação, pareceres e vetos).
+consultar_processo (e verificar_citacao com número CNJ) usa o DataJud do CNJ, que é lento: cada consulta costuma
+levar de 20 a 60 s. Avise o usuário que está aguardando e não trate a demora como falha; se expirar, repita mais tarde,
+pois o resultado fica guardado por 6 horas.
 
 Regras de uso:
 - Cite apenas julgados retornados pelas ferramentas, com tribunal, classe/número, órgão, relator, data e link da fonte.
@@ -82,6 +85,15 @@ export interface OpcoesServidor {
 
 /** Importações de normas em andamento (compartilhadas entre requisições do mesmo processo). */
 const importacoes = new Map<string, Promise<undefined>>();
+/** Consultas ao DataJud em andamento, para não repetir a mesma consulta lenta em paralelo. */
+const consultasDataJud = new Map<string, Promise<{ alias: string; processos: ProcessoDataJud[] }>>();
+const CACHE_DATAJUD_MS = 6 * 60 * 60 * 1000;
+
+/** O que o SDK entrega ao handler além dos argumentos (só o que é usado aqui). */
+interface ExtraFerramenta {
+  _meta?: { progressToken?: string | number };
+  sendNotification?: (n: { method: "notifications/progress"; params: { progressToken: string | number; progress: number; message?: string } }) => Promise<void>;
+}
 
 export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpServer {
   const server = new McpServer(
@@ -133,11 +145,11 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
 
   /** Envolve o handler com o controle de cota e tratamento de erros. */
   const protegido =
-    <A,>(nome: string, fn: (args: A) => Promise<CallToolResult> | CallToolResult) =>
-    async (args: A): Promise<CallToolResult> => {
+    <A, X = unknown>(nome: string, fn: (args: A, extra: X) => Promise<CallToolResult> | CallToolResult) =>
+    async (args: A, extra: X): Promise<CallToolResult> => {
       try {
         opts.antesDeChamar?.(nome);
-        return await fn(args);
+        return await fn(args, extra);
       } catch (e) {
         return erro(e instanceof Error ? e.message : String(e));
       }
@@ -335,21 +347,26 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("verificar_citacao", async ({ citacao, relator }) => {
+    protegido("verificar_citacao", async ({ citacao, relator }, extra: ExtraFerramenta) => {
       const c = interpretarCitacao(citacao);
       if (c?.tipo === "cnj") {
         if (!cnjValido(c.numero)) {
           return ok({ status: "DIVERGENCIA", citacao: formatarCnj(c.numero), observacao: "Os dígitos verificadores do número CNJ não conferem." });
         }
         try {
-          const r = await consultarProcesso(c.numero, { chave: opts.datajudKey, maxMovimentos: 5, fetchImpl: opts.fetchImpl });
+          const r = await processoDataJud(c.numero, 0, extra);
           return ok(
             r.processos.length
-              ? { status: "CONFIRMADO", fonte: "DataJud/CNJ", processos: r.processos.map(({ movimentos, ...p }) => p) }
+              ? { status: "CONFIRMADO", fonte: "DataJud/CNJ", processos: r.processos.map(({ movimentos, ...p }) => p), consultado_em: r.consultado_em }
               : { status: "NAO_ENCONTRADO", observacao: `Processo não localizado no DataJud (${r.alias}).` },
           );
         } catch (e) {
-          return ok({ status: "INDISPONIVEL", observacao: `Não foi possível consultar o DataJud agora: ${(e as Error).message}. Não afirme que o processo não existe.` });
+          return ok({
+            status: "INDISPONIVEL",
+            observacao:
+              `Não foi possível consultar o DataJud agora: ${(e as Error).message}. Não afirme que o processo não existe. ` +
+              "A consulta continua em segundo plano e fica guardada: repetir a verificação em alguns minutos deve ser rápido.",
+          });
         }
       }
       const r = verificarCitacao(acervo, citacao, relator);
@@ -373,20 +390,81 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       title: "Consultar processo (DataJud/CNJ)",
       description:
         "Consulta metadados e movimentações de um processo pelo número CNJ (NNNNNNN-DD.AAAA.J.TR.OOOO) na API pública do DataJud. " +
-        "Não retorna peças nem inteiro teor; processos sigilosos podem não aparecer.",
+        "Não retorna peças nem inteiro teor; processos sigilosos podem não aparecer. " +
+        "ATENÇÃO: o DataJud do CNJ é lento (costuma levar de 20 a 60 s, às vezes até 90 s); a demora é normal, não é erro. " +
+        "Se a chamada expirar, repita-a depois: a consulta segue em segundo plano e o processo fica guardado por 6 horas.",
       inputSchema: {
         numero_cnj: z.string().describe("Número único do processo (com ou sem pontuação)"),
         max_movimentos: z.number().int().min(0).max(200).optional().describe("Movimentações mais recentes a retornar (padrão 30)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("consultar_processo", async ({ numero_cnj, max_movimentos }) => {
+    protegido("consultar_processo", async ({ numero_cnj, max_movimentos }, extra: ExtraFerramenta) => {
       if (!cnjValido(numero_cnj)) return erro("Número CNJ inválido (20 dígitos com dígito verificador correto).");
-      const r = await consultarProcesso(numero_cnj, { chave: opts.datajudKey, maxMovimentos: max_movimentos, fetchImpl: opts.fetchImpl });
-      if (!r.processos.length) return ok({ estado: "NAO_ENCONTRADO", indice: r.alias });
-      return ok({ estado: "ENCONTRADO", fonte: "DataJud/CNJ", processos: r.processos });
+      const r = await processoDataJud(numero_cnj, max_movimentos ?? 30, extra);
+      if (!r.processos.length) return ok({ estado: "NAO_ENCONTRADO", indice: r.alias, consultado_em: r.consultado_em });
+      return ok({
+        estado: "ENCONTRADO",
+        fonte: "DataJud/CNJ",
+        consultado_em: r.consultado_em,
+        ...(r.do_cache ? { observacao: "Dados guardados de uma consulta recente ao DataJud (até 6 horas)." } : {}),
+        processos: r.processos,
+      });
     }),
   );
+
+  /**
+   * Consulta ao DataJud com cache de 6 horas no acervo. O DataJud costuma levar de 20 a 60 s;
+   * enquanto espera, envia notificações de progresso (quando o cliente as pede) e, se o cliente
+   * desistir, a consulta termina em segundo plano e fica guardada para a próxima chamada.
+   */
+  const processoDataJud = async (
+    cnj: string,
+    maxMovimentos: number,
+    extra?: ExtraFerramenta,
+  ): Promise<{ alias: string; processos: ProcessoDataJud[]; consultado_em: string; do_cache: boolean }> => {
+    const numero = cnj.replace(/\D/g, "");
+    const chaveCache = `datajud:${numero}`;
+    const recortar = (ps: ProcessoDataJud[]) => ps.map((p) => ({ ...p, movimentos: p.movimentos.slice(0, maxMovimentos) }));
+    const guardado = acervo.lerAnalise<{ alias: string; processos: ProcessoDataJud[] }>(chaveCache, "processo");
+    if (guardado && Date.now() - Date.parse(guardado.criado_em) < CACHE_DATAJUD_MS) {
+      return { alias: guardado.conteudo.alias, processos: recortar(guardado.conteudo.processos), consultado_em: guardado.criado_em, do_cache: true };
+    }
+    let tarefa = consultasDataJud.get(numero);
+    if (!tarefa) {
+      tarefa = consultarProcesso(numero, {
+        chave: opts.datajudKey,
+        chavePublica: acervo.lerMeta("datajud_chave_publica") ?? undefined,
+        aoRenovarChave: (k) => acervo.gravarMeta("datajud_chave_publica", k),
+        maxMovimentos: 200,
+        fetchImpl: opts.fetchImpl,
+      }).then((r) => {
+        acervo.gravarAnalise(chaveCache, "processo", "datajud", r);
+        return r;
+      });
+      consultasDataJud.set(numero, tarefa);
+      tarefa.finally(() => consultasDataJud.delete(numero)).catch(() => {});
+    }
+    const token = extra?._meta?.progressToken;
+    let segundos = 0;
+    const enviar = extra?.sendNotification;
+    const timer =
+      token !== undefined && enviar
+        ? setInterval(() => {
+            segundos += 10;
+            enviar({
+              method: "notifications/progress",
+              params: { progressToken: token, progress: segundos, message: `Aguardando o DataJud (${segundos} s; o serviço do CNJ é lento)` },
+            }).catch(() => {});
+          }, 10_000)
+        : undefined;
+    try {
+      const r = await tarefa;
+      return { alias: r.alias, processos: recortar(r.processos), consultado_em: new Date().toISOString(), do_cache: false };
+    } finally {
+      if (timer) clearInterval(timer);
+    }
+  };
 
   /** Importa sob demanda a norma citada que ainda não está no índice (texto atualizado da Câmara). */
   const garantirNorma = async (c: CitacaoLegal, prazoMs = 45_000): Promise<string | undefined> => {

@@ -13,7 +13,7 @@ Servidor MCP (Model Context Protocol) que conecta o Claude à jurisprudência e 
 | `extrair_razao_decidir` | Ratio decidendi de um julgado: questão, regra decisiva, fundamentos determinantes, obiter dicta, fatos materiais, dispositivos e precedentes citados |
 | `buscar_legislacao` | Texto consolidado vigente, artigo por artigo: por citação ("art. 14 do CDC", "art. 3º da Lei 13.146/2015") ou por assunto |
 | `historico_legislativo` | Tramitação da norma no Congresso: projeto de origem, justificação ou exposição de motivos, pareceres das comissões e razões de veto, com trechos e links (Senado e Câmara). Para um dispositivo, procura a lei que o incluiu ou alterou |
-| `consultar_processo` | Metadados e movimentações pelo número CNJ (DataJud/CNJ, ao vivo) |
+| `consultar_processo` | Metadados e movimentações pelo número CNJ (DataJud/CNJ, ao vivo, com cache de 6 h) |
 | `listar_fontes` | O que está indexado e quais tribunais respondem ao vivo |
 
 `verificar_citacao` também diz se um dispositivo legal está VIGENTE ou REVOGADO.
@@ -185,7 +185,7 @@ Variáveis de ambiente (veja `.env.example`):
 | `JURIS_API_KEYS` | vazio | Chaves aceitas (`Authorization: Bearer` ou `?key=`). Vazio deixa o servidor aberto |
 | `JURIS_ALLOWED_HOSTS` | vazio | Proteção contra DNS rebinding |
 | `JURIS_COTA_MENSAL` | `0` | Limite de chamadas por chave por mês (0 = ilimitado) |
-| `DATAJUD_API_KEY` | chave pública do CNJ | Chave própria do DataJud, se tiver |
+| `DATAJUD_API_KEY` | chave pública do CNJ | Chave própria do DataJud, se tiver (se a pública for recusada, a vigente é lida na wiki do CNJ) |
 | `JURIS_EMBEDDINGS` | `nenhum` | `voyage` ou `openai` para ativar a busca semântica |
 | `JURIS_EMBEDDINGS_MODEL` / `_DIM` / `_URL` | por provedor | Modelo, dimensão e endpoint dos embeddings |
 | `VOYAGE_API_KEY` / `JURIS_EMBEDDINGS_KEY` | vazio | Chave do provedor de embeddings |
@@ -235,6 +235,10 @@ src/
 - O acervo STJ traz o espelho do acórdão (ementa, decisão e referências), não o voto.
 - A cota é contada em memória e zera quando o processo reinicia. Para cobrança real, mova o contador para o banco e use OAuth para identificar usuários.
 - O DataJud não devolve peças nem inteiro teor e omite processos sigilosos.
+- O DataJud é lento (20 a 60 s por consulta). O prazo é de 90 s, o cliente recebe avisos de progresso a cada 10 s
+  e cada processo consultado fica guardado no acervo por 6 horas; se o cliente desistir antes, a consulta termina
+  em segundo plano e a próxima chamada sai do cache. Se o CNJ trocar a chave pública, a nova é lida em
+  https://datajud-wiki.cnj.jus.br/api-publica/acesso/ e guardada no acervo.
 - A legislação cobre normas federais. Leis estaduais e municipais e atos infralegais (resoluções, instruções normativas) ainda não estão no índice.
 - Sem `ANTHROPIC_API_KEY`, a razão de decidir de ementas fora do padrão CNJ fica a cargo do Claude na conversa. A extração no servidor não foi testada contra a API real neste ambiente (sem chave); os testes usam um analista simulado.
 

@@ -3,9 +3,22 @@
  * Documentação: https://datajud-wiki.cnj.jus.br/api-publica/
  */
 
-// Chave pública divulgada pelo CNJ na wiki do DataJud. Pode ser trocada por DATAJUD_API_KEY.
-const CHAVE_PUBLICA = "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==";
+// Chave pública divulgada pelo CNJ na wiki do DataJud. O CNJ pode trocá-la a qualquer momento:
+// se for recusada, a chave vigente é lida de novo na wiki (ou use DATAJUD_API_KEY).
+export const CHAVE_PUBLICA = "cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==";
 const BASE = "https://api-publica.datajud.cnj.jus.br";
+export const URL_WIKI_ACESSO = "https://datajud-wiki.cnj.jus.br/api-publica/acesso/";
+/** O DataJud costuma levar de 20 a 60 s por consulta; o prazo cobre essa demora com folga. */
+export const PRAZO_DATAJUD_MS = 90_000;
+
+/** Lê a chave pública vigente na página de acesso da wiki do DataJud. */
+export async function chaveVigenteDaWiki(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const resp = await fetchImpl(URL_WIKI_ACESSO, { signal: AbortSignal.timeout(20_000) });
+  if (!resp.ok) return null;
+  const html = await resp.text();
+  const m = html.match(/APIKey\s+(?:<[^>]+>\s*)*([A-Za-z0-9+/_-]{20,}={0,2})/);
+  return m?.[1] ?? null;
+}
 
 const UFS = [
   "ac", "al", "ap", "am", "ba", "ce", "dft", "es", "go", "ma", "mt", "ms", "mg", "pa",
@@ -83,18 +96,49 @@ function dataAjuizamento(s?: string): string | null {
 
 export async function consultarProcesso(
   cnj: string,
-  opts: { chave?: string; maxMovimentos?: number; fetchImpl?: typeof fetch } = {},
+  opts: {
+    /** Chave própria (DATAJUD_API_KEY): tem prioridade e nunca é trocada automaticamente. */
+    chave?: string;
+    /** Última chave pública obtida da wiki, se houver. */
+    chavePublica?: string;
+    /** Chamado quando a chave pública é renovada pela wiki, para guardá-la. */
+    aoRenovarChave?: (chave: string) => void;
+    maxMovimentos?: number;
+    prazoMs?: number;
+    fetchImpl?: typeof fetch;
+  } = {},
 ): Promise<{ alias: string; processos: ProcessoDataJud[] }> {
   const numero = cnj.replace(/\D/g, "");
   const alias = aliasTribunal(numero);
   if (!alias) throw new Error("Não foi possível identificar o tribunal pelo número CNJ informado.");
+  const f = opts.fetchImpl ?? fetch;
+  const prazo = opts.prazoMs ?? PRAZO_DATAJUD_MS;
 
-  const resp = await (opts.fetchImpl ?? fetch)(`${BASE}/api_publica_${alias}/_search`, {
-    method: "POST",
-    headers: { Authorization: `APIKey ${opts.chave ?? CHAVE_PUBLICA}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ size: 10, query: { match: { numeroProcesso: numero } } }),
-    signal: AbortSignal.timeout(30_000),
-  });
+  const consultar = (chave: string) =>
+    f(`${BASE}/api_publica_${alias}/_search`, {
+      method: "POST",
+      headers: { Authorization: `APIKey ${chave}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ size: 10, query: { match: { numeroProcesso: numero } } }),
+      signal: AbortSignal.timeout(prazo),
+    }).catch((e) => {
+      if ((e as Error)?.name === "TimeoutError") {
+        throw new Error(`o DataJud não respondeu em ${Math.round(prazo / 1000)} s (o serviço do CNJ está lento)`);
+      }
+      throw e;
+    });
+
+  let resp = await consultar(opts.chave ?? opts.chavePublica ?? CHAVE_PUBLICA);
+  if ((resp.status === 401 || resp.status === 403) && !opts.chave) {
+    // a chave pública pode ter sido trocada pelo CNJ: busca a vigente na wiki e tenta de novo
+    const nova = await chaveVigenteDaWiki(f).catch(() => null);
+    if (nova && nova !== (opts.chavePublica ?? CHAVE_PUBLICA)) {
+      resp = await consultar(nova);
+      if (resp.ok) opts.aoRenovarChave?.(nova);
+    }
+  }
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error(`DataJud recusou a chave de acesso (HTTP ${resp.status}). Confira a chave vigente em ${URL_WIKI_ACESSO}`);
+  }
   if (!resp.ok) throw new Error(`DataJud respondeu HTTP ${resp.status}`);
   const json = (await resp.json()) as { hits?: { hits?: { _source: Record<string, any> }[] } };
 

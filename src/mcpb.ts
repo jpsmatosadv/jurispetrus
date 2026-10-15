@@ -139,7 +139,7 @@ async function modoInstalacao(): Promise<void> {
     "1. Baixe e instale o Node.js LTS em https://nodejs.org (instalador para macOS).\n" +
     "2. Feche o Claude Desktop por completo (Cmd+Q) e abra de novo.\n" +
     "A extensão encontra o Node.js instalado sozinha; não é preciso mudar nenhuma configuração.";
-  const server = new McpServer({ name: "jurispetrus", version: "0.1.3" }, { instructions: orientacao });
+  const server = new McpServer({ name: "jurispetrus", version: "0.1.4" }, { instructions: orientacao });
   server.registerTool(
     "jurispetrus_instalacao",
     {

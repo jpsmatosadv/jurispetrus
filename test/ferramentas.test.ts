@@ -101,3 +101,54 @@ test("verificar_citacao informa vigência de dispositivo legal", async () => {
   const r = await call("verificar_citacao", { citacao: "art. 14 do CDC" });
   assert.equal(r.status, "VIGENTE");
 });
+
+test("consultar_processo guarda o processo e renova a chave pública recusada", async () => {
+  const chamadas: { url: string; chave?: string }[] = [];
+  const fetchFalso = (async (url: string, init?: RequestInit) => {
+    const chave = (init?.headers as Record<string, string> | undefined)?.Authorization;
+    chamadas.push({ url, chave });
+    if (url.includes("datajud-wiki")) {
+      return new Response('<li>Authorization: APIKey <strong>Q0hBVkVOT1ZBREVURVNURTEyMzQ1Ng==</strong></li>');
+    }
+    if (chave !== "APIKey Q0hBVkVOT1ZBREVURVNURTEyMzQ1Ng==") return new Response("", { status: 401 });
+    return Response.json({
+      hits: { hits: [{ _source: {
+        numeroProcesso: "10087949120178260100", tribunal: "TJSP", grau: "G1", classe: { nome: "Procedimento Comum Cível" },
+        orgaoJulgador: { nome: "1ª Vara Cível" }, assuntos: [{ nome: "Indenização por Dano Moral" }], dataAjuizamento: "20170210000000",
+        movimentos: [{ nome: "Distribuição", dataHora: "2017-02-10T10:00:00" }, { nome: "Sentença", dataHora: "2018-05-02T10:00:00" }],
+      } }] },
+    });
+  }) as typeof fetch;
+  const a = acervoBase();
+  const server = criarServidor(a, { analista: null, fontes: [], fetchImpl: fetchFalso });
+  const [x, y] = InMemoryTransport.createLinkedPair();
+  await server.connect(x);
+  const client = new Client({ name: "teste", version: "1" });
+  await client.connect(y);
+  const call = async (args: Record<string, unknown>) =>
+    JSON.parse(((await client.callTool({ name: "consultar_processo", arguments: args })).content as { text: string }[])[0].text);
+
+  const r1 = await call({ numero_cnj: "1008794-91.2017.8.26.0100", max_movimentos: 1 });
+  assert.equal(r1.estado, "ENCONTRADO");
+  assert.equal(r1.processos[0].movimentos.length, 1);
+  assert.equal(r1.processos[0].movimentos[0].nome, "Sentença");
+  assert.equal(a.lerMeta("datajud_chave_publica"), "Q0hBVkVOT1ZBREVURVNURTEyMzQ1Ng==", "chave nova guardada");
+  const consultas = chamadas.length;
+
+  const r2 = await call({ numero_cnj: "10087949120178260100" });
+  assert.equal(r2.processos[0].movimentos.length, 2, "o cache guarda todas as movimentações");
+  assert.match(r2.observacao, /consulta recente/);
+  assert.equal(chamadas.length, consultas, "a segunda consulta vem do acervo, sem chamar o DataJud");
+});
+
+test("DataJud lento: o erro de prazo explica a demora", async () => {
+  const { consultarProcesso } = await import("../src/sources/datajud.js");
+  const lento = ((_: string, init?: RequestInit) =>
+    new Promise((_r, rej) => init?.signal?.addEventListener("abort", () => rej(init.signal!.reason)))) as typeof fetch;
+  const vivo = setTimeout(() => {}, 1000); // o timer de AbortSignal.timeout não segura o processo
+  await assert.rejects(
+    consultarProcesso("10087949120178260100", { fetchImpl: lento, prazoMs: 50 }),
+    /não respondeu em 0 s \(o serviço do CNJ está lento\)/,
+  );
+  clearTimeout(vivo);
+});

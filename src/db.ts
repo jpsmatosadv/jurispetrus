@@ -157,7 +157,7 @@ export class Acervo {
     return r?.valor ?? null;
   }
 
-  private gravarMeta(chave: string, valor: string): void {
+  gravarMeta(chave: string, valor: string): void {
     this.db.prepare("INSERT INTO meta (chave, valor) VALUES (?, ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor").run(chave, valor);
   }
 
