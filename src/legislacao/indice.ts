@@ -248,3 +248,16 @@ export function pesquisarDispositivos(
       pontuacao: Math.round(p * 1000) / 1000,
     }));
 }
+
+/**
+ * Leis citadas nas notas de redação de um dispositivo ("Artigo acrescido pela Lei nº 14.181, de 1/7/2021"),
+ * da mais recente para a mais antiga.
+ */
+export function leisAlteradoras(texto: string): string[] {
+  const notas = texto.slice(texto.indexOf("Notas:") >= 0 ? texto.indexOf("Notas:") : 0);
+  const achadas = [...notas.matchAll(/pel[ao]\s+(Lei(?:\s+Complementar)?|Emenda Constitucional|Medida Provis[óo]ria)\s+n[º°o.]*\s*([\d.]+)\s*,\s*de\s*(\d{1,2})[º°o]?\/(\d{1,2})\/(\d{4})/gi)]
+    .map((m) => ({ rotulo: `${m[1]} nº ${m[2]}/${m[5]}`, data: `${m[5]}-${m[4].padStart(2, "0")}-${m[3].padStart(2, "0")}` }));
+  const unicas = new Map<string, string>();
+  for (const a of achadas.sort((x, y) => y.data.localeCompare(x.data))) if (!unicas.has(a.rotulo)) unicas.set(a.rotulo, a.data);
+  return [...unicas.keys()];
+}

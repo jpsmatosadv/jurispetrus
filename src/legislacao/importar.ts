@@ -11,6 +11,7 @@ const TIPO_BUSCA_CAMARA: Record<string, string> = {
   DEL: "Decreto-Lei",
   DEC: "Decreto",
   MPV: "Medida Provisória",
+  EMC: "Emenda Constitucional",
 };
 
 /** Descobre na busca da Câmara o caminho da "norma atualizada" (tipo + número + ano). */

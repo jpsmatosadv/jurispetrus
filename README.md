@@ -12,6 +12,7 @@ Servidor MCP (Model Context Protocol) que conecta o Claude à jurisprudência e 
 | `analisar_caso` | A partir da narrativa dos fatos, indica para cada questão jurídica os dispositivos legais vigentes, os precedentes qualificados e a jurisprudência pertinente |
 | `extrair_razao_decidir` | Ratio decidendi de um julgado: questão, regra decisiva, fundamentos determinantes, obiter dicta, fatos materiais, dispositivos e precedentes citados |
 | `buscar_legislacao` | Texto consolidado vigente, artigo por artigo: por citação ("art. 14 do CDC", "art. 3º da Lei 13.146/2015") ou por assunto |
+| `historico_legislativo` | Tramitação da norma no Congresso: projeto de origem, justificação ou exposição de motivos, pareceres das comissões e razões de veto, com trechos e links (Senado e Câmara). Para um dispositivo, procura a lei que o incluiu ou alterou |
 | `consultar_processo` | Metadados e movimentações pelo número CNJ (DataJud/CNJ, ao vivo) |
 | `listar_fontes` | O que está indexado e quais tribunais respondem ao vivo |
 
@@ -26,6 +27,10 @@ O índice guarda o texto vigente de cada artigo, com o caminho (Livro > Título 
 Fontes, em ordem: a "norma atualizada" da Câmara dos Deputados (HTML ou, quando o HTML falha, .docx), o normas.leg.br do Senado (texto estruturado por dispositivo) e o catálogo de legislação do Senado (para identificar normas e URNs). Para atualizar: `npm run ingest -- --fonte legislacao` (uma vez por mês) ou `npm run ingest -- --lei "Lei 14.181/2021"`.
 
 Alterações com vacatio legis aparecem já incorporadas ao texto, com a nota "em vigor ... após a publicação"; o Claude é orientado a observar essa nota.
+
+## Histórico legislativo
+
+Para a interpretação histórica e teleológica, `historico_legislativo` reconstrói a tramitação de leis, leis complementares e emendas constitucionais pelas APIs de dados abertos do Senado (processos pela norma gerada, com documentos) e da Câmara (proposição originária, inteiro teor e pareceres de comissão). Os PDFs são lidos no próprio servidor e a resposta traz os trechos de justificação, análise dos pareceres e razões do veto. Quando a consulta cita um artigo ("art. 477-A da CLT"), a ferramenta usa a nota de redação do índice para achar a lei que o incluiu (Lei 13.467/2017) e destaca as passagens que o discutem. Documentos digitalizados (comuns antes de 2015) não têm texto extraível, e decretos-leis e o texto originário da Constituição não têm tramitação nessas bases. Resultados ficam em cache por 30 dias.
 
 ## Razão de decidir e análise de caso
 
@@ -216,6 +221,7 @@ src/
   sources/datajud.ts consulta processual no DataJud/CNJ
   legislacao/        catálogo de normas, índice de dispositivos, leitores (Câmara, normas.leg.br, .docx), importação
   ratio.ts           estrutura da ementa (padrão CNJ) e download do inteiro teor
+  historico.ts       histórico legislativo (APIs do Senado e da Câmara, leitura de PDF)
   ia.ts              análise com Claude no servidor (opcional)
   ingest/            ingestão: STJ, BNP/CNJ, STF (repercussão geral) e TST
 ```

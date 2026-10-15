@@ -18,9 +18,11 @@ import {
   vizinhos,
   normasIndexadas,
   normaIndexada,
+  leisAlteradoras,
   type CitacaoLegal,
 } from "./legislacao/indice.js";
-import { CATALOGO, resolverNorma } from "./legislacao/catalogo.js";
+import { CATALOGO, normaPorNumero, resolverNorma, type NormaCatalogo } from "./legislacao/catalogo.js";
+import { historicoLegislativo, type HistoricoLegislativo } from "./historico.js";
 import { importarNorma } from "./legislacao/importar.js";
 import { ETAPAS, estadoAtualizacao, iniciarAtualizacao, type Etapa } from "./atualizacao.js";
 
@@ -43,6 +45,7 @@ Quando um portal estiver indisponível, diga isso ao usuário em vez de concluir
 Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jurídicas e chame analisar_caso com elas;
 depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
 Para legislação, use buscar_legislacao (texto consolidado vigente, artigo por artigo) e nunca cite artigo de memória.
+Para a finalidade de uma norma ou a "vontade do legislador", use historico_legislativo (justificação, pareceres e vetos).
 
 Regras de uso:
 - Cite apenas julgados retornados pelas ferramentas, com tribunal, classe/número, órgão, relator, data e link da fonte.
@@ -490,6 +493,73 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
             "Não invente o texto do dispositivo; oriente o usuário a conferir no Planalto (https://www.planalto.gov.br/legislacao).",
         });
       }
+    }),
+  );
+
+  server.registerTool(
+    "historico_legislativo",
+    {
+      title: "Histórico legislativo (vontade do legislador)",
+      description:
+        "Reconstrói a tramitação de uma norma no Congresso para interpretação histórica e teleológica: projeto de origem, " +
+        "justificação ou exposição de motivos, pareceres das comissões e do plenário, relatórios e razões de veto, com trechos " +
+        "e links oficiais (Senado e Câmara). Aceita a lei ('Lei 14.181/2021', 'LC 123/2006', 'EC 103/2019') ou um dispositivo " +
+        "('art. 54-A do CDC'); neste caso, procura a lei que incluiu ou alterou o artigo e destaca os trechos que o mencionam.",
+      inputSchema: {
+        norma: z.string().min(3).describe("Lei ou dispositivo, ex.: 'Lei 13.467/2017', 'art. 477-A da CLT', 'EC 103/2019'"),
+        dispositivo: z.string().optional().describe("Artigo a destacar nos documentos, se não vier na própria citação"),
+        max_documentos: z.number().int().min(1).max(10).optional().describe("Documentos com trechos (padrão 5)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    protegido("historico_legislativo", async ({ norma, dispositivo, max_documentos = 5 }) => {
+      const citacao = interpretarCitacaoLegal(norma);
+      let alvo: NormaCatalogo | undefined;
+      let artigo = dispositivo ?? (citacao ? `art. ${citacao.artigo}` : undefined);
+      let explicacao: string | undefined;
+
+      if (citacao) {
+        // Dispositivo citado: a história costuma estar na lei que o incluiu ou alterou por último.
+        await garantirNorma(citacao, 20_000);
+        const d = obterDispositivo(acervo, citacao.norma, citacao.artigo);
+        const alteradora = d ? leisAlteradoras(d.texto)[0] : undefined;
+        const daAlteradora = alteradora ? normaPorNumero(alteradora) : undefined;
+        if (daAlteradora && daAlteradora.sigla !== citacao.norma) {
+          alvo = daAlteradora;
+          explicacao = `O ${d!.rotulo} (${citacao.norma}) tem redação dada ou incluída pela ${alteradora}; o histórico é dessa lei.`;
+        } else {
+          alvo = citacao.avulsa ?? CATALOGO.find((n) => n.sigla === citacao.norma);
+        }
+      }
+      alvo ??= normaPorNumero(norma) ?? resolverNorma(norma);
+      if (!alvo) return erro("Não identifiquei a norma. Use, por exemplo, 'Lei 14.181/2021', 'LC 123/2006' ou 'art. 54-A do CDC'.");
+      if (alvo.tipo === "CON" || alvo.tipo === "ADCT") {
+        return ok({
+          estado: "SEM_TRAMITACAO",
+          mensagem:
+            "O texto originário da Constituição vem da Constituinte de 1987-88, fora das bases de tramitação. Para dispositivos " +
+            "alterados, informe a emenda (ex.: 'EC 103/2019') ou cite o artigo para que eu localize a emenda pela nota de redação.",
+        });
+      }
+
+      const chave = `HIST:${alvo.sigla}:${artigo ?? ""}:${max_documentos}`;
+      const guardado = acervo.lerAnalise<HistoricoLegislativo>(chave, "historico");
+      const fresco = guardado && Date.now() - Date.parse(guardado.criado_em) < 30 * 86_400_000;
+      const h = fresco
+        ? guardado!.conteudo
+        : await historicoLegislativo(alvo, { dispositivo: artigo, maxDocumentos: max_documentos, fetchImpl: opts.fetchImpl });
+      if (!fresco && h.processos.length) acervo.gravarAnalise(chave, "historico", "apis-congresso", h);
+
+      return ok({
+        estado: h.processos.length ? "ENCONTRADO" : "SEM_RESULTADO",
+        explicacao,
+        dispositivo_destacado: artigo,
+        ...h,
+        orientacao:
+          "Use os trechos para a interpretação histórica e teleológica, citando o documento (casa, processo, tipo, data) e o link. " +
+          "Justificação e pareceres revelam a finalidade, mas não vinculam o intérprete; aponte quando o texto aprovado mudou " +
+          "em relação ao projeto. Documentos digitalizados podem não ter texto extraível.",
+      });
     }),
   );
 

@@ -72,6 +72,7 @@ const TIPOS_LEI: Record<string, { tipo: string; rotulo: string }> = {
   "decreto lei": { tipo: "DEL", rotulo: "Decreto-Lei" },
   decreto: { tipo: "DEC", rotulo: "Decreto" },
   "medida provisória": { tipo: "MPV", rotulo: "Medida Provisória" },
+  "emenda constitucional": { tipo: "EMC", rotulo: "Emenda Constitucional" },
 };
 
 /**
@@ -80,10 +81,15 @@ const TIPOS_LEI: Record<string, { tipo: string; rotulo: string }> = {
  */
 export function normaPorNumero(texto: string): NormaCatalogo | undefined {
   const m = texto.match(
-    /\b(lei complementar|lc|decreto[- ]lei|decreto|medida provis[óo]ria|mp|lei)\s*(?:federal\s*)?(?:n[º°o.]*\s*)?(\d[\d.]*)\s*(?:\/|,?\s*de\s*(?:\d{1,2}\s*(?:de\s*)?\w+\s*(?:de\s*)?)?)\s*(\d{2,4})/i,
+    /\b(lei complementar|lc|decreto[- ]lei|decreto|medida provis[óo]ria|mp|emenda constitucional|ec|lei)\s*(?:federal\s*)?(?:n[º°o.]*\s*)?(\d[\d.]*)\s*(?:\/|,?\s*de\s*(?:\d{1,2}\s*(?:de\s*)?\w+\s*(?:de\s*)?)?)\s*(\d{2,4})/i,
   );
   if (!m) return undefined;
-  const chave = m[1].toLowerCase().replace(/^lc$/, "lei complementar").replace(/^mp$/, "medida provisória").replace("provisoria", "provisória");
+  const chave = m[1]
+    .toLowerCase()
+    .replace(/^lc$/, "lei complementar")
+    .replace(/^mp$/, "medida provisória")
+    .replace(/^ec$/, "emenda constitucional")
+    .replace("provisoria", "provisória");
   const t = TIPOS_LEI[chave];
   if (!t) return undefined;
   const numero = m[2].replace(/\./g, "");
