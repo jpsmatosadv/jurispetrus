@@ -165,12 +165,15 @@ export interface OpcoesIngestao {
   meses?: number;
   pacotes?: string[];
   forcar?: boolean;
+  /** Downloads simultâneos (padrão 4). */
+  paralelo?: number;
   log?: (msg: string) => void;
 }
 
 export async function ingerirEspelhos(acervo: Acervo, opts: OpcoesIngestao = {}): Promise<number> {
   const log = opts.log ?? console.error;
-  let total = 0;
+  // Lista primeiro tudo o que falta; os downloads (lentos no portal do STJ) correm em paralelo.
+  const pendentes: { chave: string; url: string }[] = [];
   for (const pacote of opts.pacotes ?? PACOTES_ESPELHOS) {
     const lista = (await recursos(pacote))
       .filter((r) => /^\d{8}\.json$/i.test(r.name))
@@ -178,19 +181,30 @@ export async function ingerirEspelhos(acervo: Acervo, opts: OpcoesIngestao = {})
       .slice(0, opts.meses ?? 12);
     for (const rec of lista) {
       const chave = `${pacote}/${rec.name}`;
-      if (!opts.forcar && acervo.jaIngerido(FONTE_ESPELHOS, chave)) {
-        log(`= ${chave} (já importado)`);
-        continue;
-      }
-      const dados = JSON.parse(await baixar(rec.url)) as Record<string, any>[];
-      const agora = new Date().toISOString();
-      const docs = dados.map((e) => mapearEspelho(e, agora)).filter((d): d is Documento => d !== null);
-      acervo.salvar(docs);
-      acervo.registrarIngestao(FONTE_ESPELHOS, chave, docs.length);
-      total += docs.length;
-      log(`+ ${chave}: ${docs.length} acórdãos`);
+      if (!opts.forcar && acervo.jaIngerido(FONTE_ESPELHOS, chave)) continue;
+      pendentes.push({ chave, url: rec.url });
     }
   }
+  log(`STJ: ${pendentes.length} arquivos de espelhos a importar`);
+  let total = 0;
+  let proximo = 0;
+  const trabalhador = async () => {
+    while (proximo < pendentes.length) {
+      const { chave, url } = pendentes[proximo++];
+      try {
+        const dados = JSON.parse(await baixar(url)) as Record<string, any>[];
+        const agora = new Date().toISOString();
+        const docs = dados.map((e) => mapearEspelho(e, agora)).filter((d): d is Documento => d !== null);
+        acervo.salvar(docs);
+        acervo.registrarIngestao(FONTE_ESPELHOS, chave, docs.length);
+        total += docs.length;
+        log(`+ ${chave}: ${docs.length} acórdãos`);
+      } catch (e) {
+        log(`! ${chave}: ${(e as Error).message}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, opts.paralelo ?? 4) }, trabalhador));
   return total;
 }
 
