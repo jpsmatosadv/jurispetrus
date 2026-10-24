@@ -1,5 +1,6 @@
 import type { FonteAoVivo } from "./tipos.js";
 import { fonteTst } from "./tst.js";
+import { fonteStf } from "./stf.js";
 import { fonteTjdft } from "./tjdft.js";
 import { fonteCarf } from "./carf.js";
 import { fonteTcu } from "./tcu.js";
@@ -10,6 +11,7 @@ import { fonteTjba, fonteTjes, fonteTrf5 } from "./json-tribunais.js";
 
 /** Conectores ao vivo disponíveis, na ordem em que aparecem em listar_fontes. */
 export const FONTES: FonteAoVivo[] = [
+  fonteStf,
   fonteTst,
   ...Object.keys(PORTAIS_EPROC).map(fonteEproc),
   fonteTrf5,

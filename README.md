@@ -8,7 +8,8 @@ Servidor MCP (Model Context Protocol) que conecta o Claude à jurisprudência e 
 |---|---|
 | `pesquisar_jurisprudencia` | Busca no acervo indexado e, quando há filtro de tribunal, também nos portais oficiais em tempo real. Ordena por relevância (palavras + significado), autoridade (A–E) e atualidade |
 | `obter_documento` | Ementa, tese, decisão e referências completas, com paginação |
-| `verificar_citacao` | Confere "REsp 1.990.285/SP", "Súmula Vinculante 13", "Súmula 331 do TST", "Tema 1046 da Repercussão Geral", "ADI 5.766", "IRDR 62/TJSP" ou um número CNJ (CONFIRMADO / DIVERGENCIA / NAO_ENCONTRADO) |
+| `verificar_citacao` | Confere "AgInt nos EDcl no AREsp 1.834.945", "Inq 2.139 AgR", "APn 971", "Súmula Vinculante 13", "Tema 1046 da Repercussão Geral", "ADI 5.766", "IRDR 62/TJSP" ou um número CNJ, com relator e data opcionais. STF e STJ ao vivo nas fontes oficiais; divergências com motivo (CONFIRMADO / DIVERGENCIA / NAO_ENCONTRADO / INDISPONIVEL / INCOMPLETO) |
+| `localizar_julgado` | Todos os julgados de um processo do STF ou do STJ (mérito, cautelar, referendo, embargos, agravo, monocráticas), com relator, redator, datas de julgamento, sessão virtual e publicação, ementa e link |
 | `analisar_caso` | A partir da narrativa dos fatos, indica para cada questão jurídica os dispositivos legais vigentes, os precedentes qualificados e a jurisprudência pertinente |
 | `extrair_razao_decidir` | Ratio decidendi de um julgado: questão, regra decisiva, fundamentos determinantes, obiter dicta, fatos materiais, dispositivos e precedentes citados |
 | `buscar_legislacao` | Texto consolidado vigente, artigo por artigo: por citação ("art. 14 do CDC", "art. 3º da Lei 13.146/2015") ou por assunto |
@@ -42,13 +43,32 @@ Para a interpretação histórica e teleológica, `historico_legislativo` recons
 
 ## Cobertura
 
+### Verificação de julgados do STF e do STJ (ao vivo, por classe e número)
+
+| Tribunal | Fontes | O que traz |
+|---|---|---|
+| STF | Portal de processos (`portal.stf.jus.br/processos`) e API da pesquisa de jurisprudência | Relator, redator do acórdão, relator do último incidente, número único, trânsito em julgado; cada acórdão e decisão monocrática com incidente (AgR, ED, MC, Ref...), datas de julgamento e publicação, período da sessão virtual, ementa e inteiro teor |
+| STJ | Consulta processual (`processo.stj.jus.br/processo/pesquisa`) | Relator, órgão, número único, registro, trânsito em julgado; cada acórdão com a forma completa ("AgRg no HC ..."), datas de julgamento e publicação, relator e redator, ementa (do PDF "EMENTA / ACÓRDÃO") e cada decisão monocrática |
+
+Cobre todo o acervo dos dois tribunais, inclusive processos antigos (ex.: REsp 889.766, de 2007). A consulta fica
+guardada por 24 horas. A pesquisa de jurisprudência do STJ por tema (SCON) exige reCAPTCHA e não é usada.
+
+Cada `DIVERGENCIA` traz o motivo e se ele tem explicação (`explicavel`): relator originário × redator do acórdão,
+relator do processo que mudou, data de publicação ou de fim da sessão virtual no lugar da data do julgamento, um dia
+de diferença, julgado de outra espécie do mesmo processo, classe e número existentes nos dois tribunais, dígito
+verificador CNJ inválido (com o DV que seria o correto, conferido no DataJud como sugestão). Número CNJ incompleto
+(ex.: "249120198130303") volta como `INCOMPLETO`, com os números completos compatíveis conferidos no DataJud.
+Toda resposta lista as fontes consultadas (e as que falharam) e, quando nada é encontrado, a cobertura do acervo
+local por tribunal (período e data da última atualização).
+
 ### Acervo indexado (rápido, sempre consultado)
 
 | Fonte | Conteúdo |
 |---|---|
 | Banco Nacional de Precedentes (CNJ) | Súmulas vinculantes, súmulas, repercussão geral, ADI/ADC/ADO/ADPF, IRDR, IAC, IRR, PUIL de STF, STJ, TST, TNU, 6 TRFs, 27 TJs e 24 TRTs (cerca de 15 mil) |
 | STF | Planilha oficial dos temas de repercussão geral, com relator, leading case, datas e tese |
-| STJ (Dados Abertos) | Espelhos de acórdãos de todos os órgãos julgadores e temas repetitivos, IAC e SIRDR |
+| STJ (Dados Abertos) | Espelhos de acórdãos da Corte Especial e das Seções desde 2022, das Turmas nos últimos meses, e temas repetitivos, IAC e SIRDR |
+| STF (pesquisa de jurisprudência) | Acórdãos de controle concentrado (ADI, ADC, ADO, ADPF) dos últimos anos, com relator, redator e datas |
 | TST | Súmulas, orientações jurisprudenciais (SDI-1, SDI-2, SDC) e precedentes normativos |
 
 ### Pesquisa ao vivo nos portais oficiais (quando o tribunal é pedido)
@@ -62,6 +82,7 @@ Para a interpretação histórica e teleológica, `historico_legislativo` recons
 | TJES | API de jurisprudência (bloqueia alguns clientes automatizados) |
 | TJAL, TJAC | e-SAJ |
 | TRF5 | Júlia |
+| STF | Acórdãos de Plenário e de Turma de todas as classes (HC, RHC, RE, ARE, AR, Inq...), pela API da pesquisa de jurisprudência |
 | TST | Acórdãos, súmulas, OJs e PNs |
 | CARF | Acórdãos (índice público) |
 | TCU | Jurisprudência selecionada, súmulas e acórdãos |
@@ -269,7 +290,12 @@ src/
 - A pesquisa ao vivo depende da disponibilidade de cada portal. Nos testes, TJRJ e TJAC oscilaram, e o TJES recusou o cliente.
 - Os portais que exigem captcha ou desafio anti-robô não são contornados. Para cobri-los, só com convênio ou API oficial.
 - No TJSP e no TJRJ, a pesquisa alcança só os processos do eproc; o acervo antigo do e-SAJ e do ejuris fica de fora.
-- A busca semântica precisa de um provedor de embeddings (pago ou local). Neste ambiente não foi possível baixar um modelo local.
+- No pacote do Mac, a base é atualizada sozinha uma vez por semana, em segundo plano (legislação, STF, STJ, TST e BNP).
+- Espelhos de acórdãos de Turma do STJ anteriores aos últimos meses não estão no acervo (o volume passaria de 1 GB);
+  por número, eles são alcançados pela consulta processual ao vivo.
+- A numeração do TJRS anterior ao CNJ (ex.: AC 70057637488) não é convertida: depende da consulta do próprio TJRS.
+- Os detalhes dos temas de repercussão geral (tese original e alterada, modulação, leading case) ainda vêm só da
+  planilha do STF; a consulta ao vivo do leading case traz relator, redator e datas de cada julgado.
 - O acervo STJ traz o espelho do acórdão (ementa, decisão e referências), não o voto.
 - A cota é contada em memória e zera quando o processo reinicia. Para cobrança real, mova o contador para o banco e use OAuth para identificar usuários.
 - O DataJud não devolve peças nem inteiro teor e omite processos sigilosos.

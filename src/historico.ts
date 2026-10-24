@@ -3,7 +3,7 @@
  * relatórios e razões de veto, pelas APIs de dados abertos do Senado e da Câmara.
  * Serve à interpretação histórica e teleológica (a "vontade do legislador").
  */
-import { extractText, getDocumentProxy } from "unpdf";
+import { textoDoDocumento } from "./fontes/documento.js";
 import { buscarComRetentativa, lerTexto, limparHtml } from "./fontes/tipos.js";
 import type { NormaCatalogo } from "./legislacao/catalogo.js";
 import { descobrirCaminhoCamara } from "./legislacao/importar.js";
@@ -108,28 +108,6 @@ export function extrairTrechos(texto: string, papel: PapelDocumento, dispositivo
     if (trechos.length) return trechos;
   }
   return [secao.slice(0, limite).trim() + (secao.length > limite ? " …" : "")];
-}
-
-/** A leitura de PDF não é segura em paralelo: serializa as extrações (os downloads seguem em paralelo). */
-let filaPdf: Promise<unknown> = Promise.resolve();
-function emFila<T>(tarefa: () => Promise<T>): Promise<T> {
-  const r = filaPdf.then(tarefa, tarefa);
-  filaPdf = r.catch(() => undefined);
-  return r;
-}
-
-async function textoDoDocumento(url: string, fetchImpl?: typeof fetch): Promise<string> {
-  const r = await buscarComRetentativa(url, { fetchImpl, signal: AbortSignal.timeout(45_000), tentativas: 2 });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const tipo = r.headers.get("content-type") ?? "";
-  if (/html|text\//.test(tipo)) return limparHtml(await lerTexto(r)) ?? "";
-  const bytes = new Uint8Array(await r.arrayBuffer());
-  if (bytes.length > 25_000_000) throw new Error("documento grande demais");
-  return emFila(async () => {
-    const pdf = await getDocumentProxy(bytes);
-    const { text } = await extractText(pdf, { mergePages: true });
-    return text as string;
-  });
 }
 
 /** "Proposição Originária: PL 3515/2015" na ficha da norma na Câmara. */

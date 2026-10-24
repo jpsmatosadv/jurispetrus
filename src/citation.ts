@@ -1,11 +1,14 @@
 import type { Acervo, Documento } from "./db.js";
 import { identificacao } from "./search.js";
+import { interpretarProcesso, type ProcessoCitado } from "./classes.js";
 
 export interface CitacaoInterpretada {
   tipo: "precedente" | "processo" | "cnj";
   classe?: string;
   numero: string;
   tribunal?: string;
+  /** Classe, recursos encadeados e tribunal(is) possíveis, quando a citação é de processo. */
+  processo?: ProcessoCitado;
 }
 
 const CNJ = /\b(\d{7})-?(\d{2})\.?(\d{4})\.?(\d)\.?(\d{2})\.?(\d{4})\b/;
@@ -16,14 +19,9 @@ const SUMULA = new RegExp(String.raw`\bs[úu]mula\s*${NUM}${TRIB}`, "i");
 const TEMA = new RegExp(String.raw`\btema\s*(?:repetitivo\s*|IRR\s*)?${NUM}(\s*da\s+repercuss[ãa]o\s+geral)?${TRIB}`, "i");
 const RG = new RegExp(String.raw`\bRG\s*${NUM}`);
 const INCIDENTE = new RegExp(String.raw`\b(IRDR|IAC|SIRDR|PUIL|IRR|OJ)\s*${NUM}${TRIB}`, "i");
-const CONCENTRADO = new RegExp(String.raw`\b(ADI|ADC|ADO|ADPF)\s*${NUM}`);
 
 const digitos = (s: string) => s.replace(/\D/g, "");
 const sigla = (s?: string) => s?.toUpperCase().replace(/\s+/g, "");
-
-// Ex.: "REsp 1.990.285/SP", "AgInt no AREsp n. 2.123.456", "EDcl no REsp 1990285"
-const PROCESSO =
-  /\b((?:(?:AgInt|AgRg|EDcl|EREsp|EAREsp)\s+(?:no|nos|na)\s+(?:AgInt\s+(?:no|nos)\s+)?)?(?:REsp|AREsp|RMS|HC|RHC|MS|CC|Rcl|AR|EREsp|EAREsp|AgInt|EDcl|AgRg|RE|ARE|ADI|ADC|ADPF|Pet))\s*(?:n[º°o.]*\s*)?([\d.]{1,12})(?:\s*\/\s*([A-Z]{2}))?/;
 
 export function interpretarCitacao(texto: string): CitacaoInterpretada | null {
   const cnj = texto.match(CNJ);
@@ -49,12 +47,13 @@ export function interpretarCitacao(texto: string): CitacaoInterpretada | null {
   m = texto.match(INCIDENTE);
   if (m) return { tipo: "precedente", classe: m[1].toUpperCase(), numero: digitos(m[2]), tribunal: sigla(m[3]) };
 
-  m = texto.match(CONCENTRADO);
-  if (m) return { tipo: "precedente", classe: m[1], numero: digitos(m[2]), tribunal: "STF" };
-
-  const proc = texto.match(PROCESSO);
-  if (proc) {
-    return { tipo: "processo", classe: proc[1].replace(/\s+/g, " ").trim(), numero: proc[2].replace(/\D/g, "") };
+  const p = interpretarProcesso(texto);
+  if (p) {
+    // controle concentrado sem recurso: é o próprio precedente (autoridade A)
+    if (/^(ADI|ADC|ADO|ADPF)$/.test(p.classe) && !p.recursos.length) {
+      return { tipo: "precedente", classe: p.classe, numero: p.numero, tribunal: "STF", processo: p };
+    }
+    return { tipo: "processo", classe: p.forma.replace(/\s*\d+.*$/, "").trim(), numero: p.numero, tribunal: p.tribunal, processo: p };
   }
   return null;
 }
@@ -63,6 +62,8 @@ export type StatusCitacao = "CONFIRMADO" | "DIVERGENCIA" | "NAO_ENCONTRADO" | "N
 
 export interface ResultadoVerificacao {
   status: StatusCitacao;
+  /** Por que a citação diverge, quando diverge. */
+  motivo?: "tribunal_nao_indicado" | "classe_diferente" | "relator_diferente";
   citacao: CitacaoInterpretada | null;
   encontrados: { id: string; identificacao: string; orgao: string | null; relator: string | null; data_julgamento: string | null; fonte_url: string | null }[];
   observacao: string;
@@ -98,6 +99,7 @@ export function verificarCitacao(acervo: Acervo, texto: string, relator?: string
     if (!c.tribunal && tribunais.size > 1) {
       return {
         status: "DIVERGENCIA",
+        motivo: "tribunal_nao_indicado",
         citacao: c,
         encontrados: docs.slice(0, 8).map(resumo),
         observacao: `A citação não indica o tribunal e há ${c.classe} ${c.numero} em ${[...tribunais].join(", ")}. Informe o tribunal.`,
@@ -109,6 +111,7 @@ export function verificarCitacao(acervo: Acervo, texto: string, relator?: string
     if (docs.length && !mesmaClasse.length) {
       return {
         status: "DIVERGENCIA",
+        motivo: "classe_diferente",
         citacao: c,
         encontrados: docs.slice(0, 5).map(resumo),
         observacao: `Há julgados com o número ${c.numero}, mas em outra classe processual.`,
@@ -128,10 +131,21 @@ export function verificarCitacao(acervo: Acervo, texto: string, relator?: string
 
   if (relator) {
     const r = norm(relator).replace(/^(min(istro|istra)?\.?|des(embargador[a]?)?\.?)\s+/, "");
-    const bate = docs.some((d) => d.relator && norm(d.relator).includes(r));
+    const comRelator = docs.filter((d) => d.relator);
+    // relator ausente na base não é divergência: só não dá para conferir esse dado
+    if (!comRelator.length) {
+      return {
+        status: "CONFIRMADO",
+        citacao: c,
+        encontrados: docs.slice(0, 5).map(resumo),
+        observacao: "Citação localizada no acervo. O relator não consta na base, então não foi conferido.",
+      };
+    }
+    const bate = comRelator.some((d) => norm(d.relator!).includes(r));
     if (!bate) {
       return {
         status: "DIVERGENCIA",
+        motivo: "relator_diferente",
         citacao: c,
         encontrados: docs.slice(0, 5).map(resumo),
         observacao: `O julgado existe, mas o relator informado (${relator}) não confere com o registrado.`,

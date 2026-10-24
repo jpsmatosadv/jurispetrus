@@ -62,7 +62,11 @@
     },
     {
       "name": "verificar_citacao",
-      "description": "Confere precedentes e a vigência de dispositivos legais"
+      "description": "Confere julgados (STF e STJ ao vivo, CNJ no DataJud) e a vigência de dispositivos legais"
+    },
+    {
+      "name": "localizar_julgado",
+      "description": "Todos os julgados de um processo do STF ou do STJ, por classe e número, separados por espécie"
     },
     {
       "name": "obter_documento",

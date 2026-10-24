@@ -19,7 +19,7 @@ function processoVivo(pid: number): boolean {
 }
 
 /** Tenta obter a trava; libera uma trava de processo que já terminou. */
-function travar(caminho: string): (() => void) | null {
+export function travar(caminho: string): (() => void) | null {
   for (let tentativa = 0; tentativa < 2; tentativa++) {
     try {
       const fd = openSync(caminho, "wx");

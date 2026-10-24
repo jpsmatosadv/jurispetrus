@@ -96,7 +96,9 @@ test("pesquisar prioriza precedente qualificado e oculta cancelados", () => {
 });
 
 test("interpretarCitacao reconhece formatos usuais", () => {
-  assert.deepEqual(interpretarCitacao("REsp 1.990.285/SP"), { tipo: "processo", classe: "REsp", numero: "1990285" });
+  const { processo, ...resp } = interpretarCitacao("REsp 1.990.285/SP")!;
+  assert.deepEqual(resp, { tipo: "processo", classe: "REsp", numero: "1990285", tribunal: "STJ" });
+  assert.equal(processo?.uf, "SP");
   assert.deepEqual(interpretarCitacao("AgInt no AREsp n. 2.123.456/RJ")?.classe, "AgInt no AREsp");
   assert.deepEqual(interpretarCitacao("Tema Repetitivo 988"), { tipo: "precedente", numero: "988", tribunal: "STJ", classe: "Tema" });
   assert.deepEqual(interpretarCitacao("Súmula Vinculante nº 13"), { tipo: "precedente", classe: "SV", numero: "13", tribunal: "STF" });
@@ -105,9 +107,35 @@ test("interpretarCitacao reconhece formatos usuais", () => {
   assert.deepEqual(interpretarCitacao("Tema 1.046 da Repercussão Geral"), { tipo: "precedente", classe: "Tema", numero: "1046", tribunal: "STF" });
   assert.deepEqual(interpretarCitacao("Tema 1046/STF"), { tipo: "precedente", classe: "Tema", numero: "1046", tribunal: "STF" });
   assert.deepEqual(interpretarCitacao("IRDR 62/TJSP"), { tipo: "precedente", classe: "IRDR", numero: "62", tribunal: "TJSP" });
-  assert.deepEqual(interpretarCitacao("ADI 5.766"), { tipo: "precedente", classe: "ADI", numero: "5766", tribunal: "STF" });
+  const { processo: _p, ...adi } = interpretarCitacao("ADI 5.766")!;
+  assert.deepEqual(adi, { tipo: "precedente", classe: "ADI", numero: "5766", tribunal: "STF" });
   assert.equal(interpretarCitacao("0025207-95.2016.8.19.0208")?.tipo, "cnj");
   assert.equal(interpretarCitacao("conforme a doutrina"), null);
+});
+
+test("classes processuais: originárias, compostas e no estilo do STF", () => {
+  const casos: [string, string, string[], string | undefined][] = [
+    ["APn 971", "APn", [], "STJ"],
+    ["QC 2/DF", "QC", [], "STJ"],
+    ["Inq 1.656", "Inq", [], undefined],
+    ["Inq 2.139 AgR", "Inq", ["AgR"], "STF"],
+    ["PSV 125", "PSV", [], "STF"],
+    ["ProRQF 1", "ProRQF", [], "STJ"],
+    ["Rcl 4.335", "Rcl", [], undefined],
+    ["AR 2.876", "AR", [], undefined],
+    ["AgInt nos EDcl no AREsp 1.834.945/SP", "AREsp", ["AgInt", "EDcl"], "STJ"],
+    ["AgInt na Pet 14.123", "Pet", ["AgInt"], "STJ"],
+    ["AgRg no HC 1.033.863", "HC", ["AgRg"], "STJ"],
+    ["ADI 5.022 AgR", "ADI", ["AgR"], "STF"],
+    ["HC 598.886 (STF)", "HC", [], "STF"],
+  ];
+  for (const [texto, classe, recursos, tribunal] of casos) {
+    const c = interpretarCitacao(texto);
+    assert.equal(c?.processo?.classe, classe, texto);
+    assert.deepEqual(c?.processo?.recursos, recursos, texto);
+    assert.equal(c?.processo?.tribunal, tribunal, texto);
+  }
+  assert.equal(interpretarCitacao("ADI 5.022 AgR")?.tipo, "processo", "recurso na ADI não é o precedente de mérito");
 });
 
 test("verificarCitacao confirma, diverge e não encontra", () => {

@@ -5,6 +5,10 @@ import type { Acervo } from "./db.js";
 import { pesquisar, identificacao, type FiltrosPesquisa, type ResultadoPesquisa } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
 import { consultarProcesso, cnjValido, formatarCnj, type ProcessoDataJud } from "./sources/datajud.js";
+import { candidatosCnj, corrigirDv, numeroIncompleto } from "./cnj.js";
+import { interpretarProcesso } from "./classes.js";
+import { localizarJulgado, type ResultadoLocalizacao } from "./localizar.js";
+import type { JulgadoLocalizado } from "./fontes/processo-superior.js";
 import { pesquisarSigen } from "./legislacao/fontes.js";
 import type { Embedder } from "./embeddings.js";
 import type { FonteAoVivo } from "./fontes/tipos.js";
@@ -46,6 +50,11 @@ Para pesquisar bem: envie em consultas_alternativas de 2 a 4 outras formulaçõe
 de ementa); num caso concreto, use triagem: true com a questão em 'contexto' e cite só os candidatos pertinentes.
 Sinônimos jurídicos usuais entram sozinhos, cópias do mesmo julgado vindas de fontes diferentes aparecem uma vez
 (campo outras_fontes) e resultados muito abaixo do melhor em relevância são descartados.
+
+Para conferir um julgado do STF ou do STJ citado por classe e número (inclusive antigos, de Turma e monocráticos),
+use verificar_citacao ou localizar_julgado: consultam as fontes oficiais ao vivo e separam mérito, cautelar, referendo,
+embargos e agravo. Em DIVERGENCIA, leia o motivo: as marcadas como explicáveis (redator do acórdão, data de publicação,
+fim da sessão virtual) não indicam erro na citação. INDISPONIVEL significa fonte fora do ar, não julgado inexistente.
 
 Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jurídicas e chame analisar_caso com elas;
 depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
@@ -95,6 +104,13 @@ const consultasDataJud = new Map<string, Promise<{ alias: string; processos: Pro
 const CACHE_DATAJUD_MS = 6 * 60 * 60 * 1000;
 /** Fração mínima do acervo com vetor para ligar a busca híbrida. */
 const COBERTURA_MINIMA_VETORES = 0.95;
+
+/** Julgados do processo agrupados por espécie (mérito, cautelar, referendo, embargos, agravo...). */
+function agruparPorEspecie(julgados: JulgadoLocalizado[]): Record<string, JulgadoLocalizado[]> {
+  const out: Record<string, JulgadoLocalizado[]> = {};
+  for (const j of julgados) (out[j.especie] ??= []).push({ ...j, ementa: j.ementa ? j.ementa.slice(0, 1200) : null });
+  return out;
+}
 
 /** O que o SDK entrega ao handler além dos argumentos (só o que é usado aqui). */
 interface ExtraFerramenta {
@@ -161,6 +177,9 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       ? `Fontes indisponíveis agora: ${falhas.map((f) => f.tribunais.join("/")).join(", ")}. A pesquisa nelas pode estar incompleta.`
       : undefined;
   };
+
+  /** Tribunais do filtro já expandidos (ESTADUAIS → TJs etc.), para informar a cobertura. */
+  const args_tribunais = (t?: string[]) => (t?.length ? expandirTribunais(t, tribunaisConhecidos()) : undefined);
 
   /** Envolve o handler com o controle de cota e tratamento de erros. */
   const protegido =
@@ -245,14 +264,37 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         triagem ? { ...entrada, limite: 30, pagina: 1, relevancia_minima: entrada.relevancia_minima ?? 0.05 } : entrada,
         ao_vivo,
       );
-      if (!r.resultados.length) {
+      // Consulta que é só classe e número de processo do STF/STJ: localiza na fonte oficial
+      const proc = interpretarProcesso(entrada.consulta);
+      const soNumero = proc && entrada.consulta.replace(/[^A-Za-zÀ-ú]/g, "").length <= proc.forma.replace(/[^A-Za-z]/g, "").length + 6;
+      const localizacao =
+        proc && soNumero && (proc.tribunal ?? proc.tribunais_possiveis[0]) && (entrada.pagina ?? 1) === 1
+          ? resumoLocalizacao(await localizarJulgado(acervo, proc, { fetchImpl: opts.fetchImpl }))
+          : undefined;
+      const transparencia = {
+        fontes_consultadas: [
+          { fonte: "acervo local", status: "ok", documentos_encontrados: r.total_candidatos },
+          ...fontes,
+          ...(localizacao?.fontes_consultadas ?? []),
+        ],
+        cobertura_acervo: {
+          ...acervo.coberturaAcervo(args_tribunais(entrada.tribunais) ?? ["STF", "STJ"]),
+          nota: entrada.tribunais?.length
+            ? undefined
+            : "Sem filtro de tribunal: cobertura do STF e do STJ. Dos demais tribunais, o acervo local traz os precedentes qualificados (BNP); acórdãos comuns vêm dos portais ao filtrar por tribunal.",
+        },
+      };
+      if (!r.resultados.length && !localizacao?.processos.length) {
         return ok({
           estado: "SEM_RESULTADO",
-          mensagem: "Nenhum julgado encontrado para esses termos e filtros. Não cite julgados que não tenham sido retornados.",
-          fontes_consultadas: fontes,
+          mensagem:
+            "Nenhum julgado encontrado para esses termos e filtros. Não cite julgados que não tenham sido retornados. " +
+            "Veja em cobertura_acervo o período coberto e em fontes_consultadas o que respondeu.",
+          localizacao,
+          ...transparencia,
         });
       }
-      const comuns = { fontes_consultadas: fontes.length ? fontes : undefined };
+      const comuns = { ...transparencia, localizacao };
       if (!triagem) return ok({ estado: "ENCONTRADO", ...r, ...comuns, aviso: avisoFalhas(fontes) });
 
       const questao = contexto?.trim() || entrada.consulta;
@@ -451,52 +493,196 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     {
       title: "Verificar citação",
       description:
-        "Confirma se um precedente citado existe (ex.: 'REsp 1.990.285/SP', 'Tema 988/STJ', ou número CNJ) ou se um " +
-          "dispositivo legal está vigente (ex.: 'art. 1.022 do CPC': VIGENTE / REVOGADO). " +
-        "Retorna CONFIRMADO, DIVERGENCIA (existe, mas com dado diferente), NAO_ENCONTRADO ou NAO_RECONHECIDA. " +
-        "Use antes de incluir em uma peça qualquer julgado que não tenha vindo da pesquisa.",
+        "Confirma se um julgado citado existe e se os dados conferem (classe e número, relator, data), ou se um dispositivo legal " +
+        "está vigente (ex.: 'art. 1.022 do CPC': VIGENTE / REVOGADO). Reconhece todas as classes do STF e do STJ, inclusive " +
+        "as compostas ('AgInt nos EDcl no AREsp 1.834.945', 'Inq 2.139 AgR', 'APn 971', 'PSV 125'). Processos do STF e do STJ " +
+        "são conferidos ao vivo nas fontes oficiais (todo o acervo do tribunal, inclusive julgados antigos e monocráticos); " +
+        "números CNJ, no DataJud. Retorna CONFIRMADO, DIVERGENCIA (cada uma com o motivo e se tem explicação), NAO_ENCONTRADO, " +
+        "INDISPONIVEL (fonte fora do ar: não conclua que não existe), INCOMPLETO (número CNJ truncado, com candidatos) ou " +
+        "NAO_RECONHECIDA. Use antes de incluir em uma peça qualquer julgado que não tenha vindo da pesquisa.",
       inputSchema: {
         citacao: z.string().min(3).describe("Citação como aparece no texto"),
         relator: z.string().optional().describe("Relator atribuído na citação, para conferência"),
+        data: z.string().optional().describe("Data atribuída ao julgado (dd/mm/aaaa ou aaaa-mm-dd), para conferência"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("verificar_citacao", async ({ citacao, relator }, extra: ExtraFerramenta) => {
+    protegido("verificar_citacao", async ({ citacao, relator, data }, extra: ExtraFerramenta) => {
       const c = interpretarCitacao(citacao);
-      if (c?.tipo === "cnj") {
-        if (!cnjValido(c.numero)) {
-          return ok({ status: "DIVERGENCIA", citacao: formatarCnj(c.numero), observacao: "Os dígitos verificadores do número CNJ não conferem." });
+      if (c?.tipo === "cnj") return ok(await verificarCnj(c.numero, extra));
+
+      // STF e STJ: conferência ao vivo na fonte oficial (processos e controle concentrado)
+      if (c?.processo && (c.processo.tribunal ? ["STF", "STJ"].includes(c.processo.tribunal) : c.processo.tribunais_possiveis.length)) {
+        const local = c.tipo === "precedente" ? verificarCitacao(acervo, citacao) : null;
+        const r = await localizarJulgado(acervo, c.processo, { relator, data, fetchImpl: opts.fetchImpl });
+        if (r.status === "INDISPONIVEL" && local?.status === "CONFIRMADO") {
+          return ok({ ...local, aviso: "Fonte oficial indisponível agora: conferido só no acervo local.", fontes_consultadas: r.fontes_consultadas });
         }
-        try {
-          const r = await processoDataJud(c.numero, 0, extra);
-          return ok(
-            r.processos.length
-              ? { status: "CONFIRMADO", fonte: "DataJud/CNJ", processos: r.processos.map(({ movimentos, ...p }) => p), consultado_em: r.consultado_em }
-              : { status: "NAO_ENCONTRADO", observacao: `Processo não localizado no DataJud (${r.alias}).` },
-          );
-        } catch (e) {
-          return ok({
-            status: "INDISPONIVEL",
-            observacao:
-              `Não foi possível consultar o DataJud agora: ${(e as Error).message}. Não afirme que o processo não existe. ` +
-              "A consulta continua em segundo plano e fica guardada: repetir a verificação em alguns minutos deve ser rápido.",
-          });
-        }
+        return ok(resumoLocalizacao(r));
       }
+
       const r = verificarCitacao(acervo, citacao, relator);
-      const legal = r.status === "NAO_RECONHECIDA" ? interpretarCitacaoLegal(citacao) : null;
-      if (legal) {
-        await garantirNorma(legal);
-        const d = dispositivoCitado(legal);
-        return ok(
-          d
-            ? { status: d.revogado ? "REVOGADO" : "VIGENTE", dispositivo: d }
-            : { status: "NAO_INDEXADO", citacao: legal, observacao: "A norma ou o artigo não está no índice de legislação consolidada." },
-        );
+      if (r.status === "NAO_RECONHECIDA") {
+        const legal = interpretarCitacaoLegal(citacao);
+        if (legal) {
+          await garantirNorma(legal);
+          const d = dispositivoCitado(legal);
+          return ok(
+            d
+              ? { status: d.revogado ? "REVOGADO" : "VIGENTE", dispositivo: d }
+              : { status: "NAO_INDEXADO", citacao: legal, observacao: "A norma ou o artigo não está no índice de legislação consolidada." },
+          );
+        }
+        const incompleto = numeroIncompleto(citacao);
+        if (incompleto) return ok(await verificarCnjIncompleto(incompleto, extra));
       }
-      return ok(r);
+      return ok({
+        ...r,
+        fontes_consultadas: [{ fonte: "acervo local", status: r.status === "NAO_ENCONTRADO" ? "nao_encontrado" : "ok" }],
+        cobertura_acervo: r.status === "NAO_ENCONTRADO" ? acervo.coberturaAcervo(r.citacao?.tribunal ? [r.citacao.tribunal] : undefined) : undefined,
+      });
     }),
   );
+
+  server.registerTool(
+    "localizar_julgado",
+    {
+      title: "Localizar julgado no STF ou no STJ (ao vivo)",
+      description:
+        "Busca um processo do STF ou do STJ pela classe e número, nas fontes oficiais (portal de processos e pesquisa de " +
+        "jurisprudência do STF; consulta processual do STJ), cobrindo todo o acervo do tribunal, inclusive julgados antigos, " +
+        "de Turma e decisões monocráticas. Devolve relator, redator do acórdão, número único, trânsito em julgado e todos os " +
+        "julgados do processo separados por espécie (mérito, cautelar, referendo, embargos, agravo...), cada um com datas de " +
+        "julgamento e publicação, sessão virtual, ementa e link do inteiro teor. Aceita classes compostas ('AgInt nos EDcl no " +
+        "AREsp 1.834.945', 'Inq 2.139 AgR'). Sem tribunal na citação, consulta os dois quando a classe existe em ambos.",
+      inputSchema: {
+        citacao: z.string().min(3).describe("Classe e número, ex.: 'AgRg no HC 1.033.863', 'HC 166.373/STF', 'ADI 5.022'"),
+        tribunal: z.enum(["STF", "STJ"]).optional().describe("Tribunal, quando a citação não o indica"),
+        relator: z.string().optional().describe("Relator atribuído na citação, para conferência"),
+        data: z.string().optional().describe("Data atribuída ao julgado, para conferência"),
+        ementas: z.number().int().min(0).max(10).optional().describe("STJ: quantos acórdãos ter a ementa lida do PDF (padrão 3)"),
+        atualizar: z.boolean().optional().describe("Ignora a consulta guardada (24 h) e consulta de novo"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    protegido("localizar_julgado", async ({ citacao, tribunal, relator, data, ementas, atualizar }) => {
+      const p = interpretarProcesso(citacao);
+      if (!p) return ok({ status: "NAO_RECONHECIDA", observacao: "Não identifiquei classe e número de processo do STF ou do STJ." });
+      const alvo = tribunal ? { ...p, tribunal, tribunais_possiveis: [tribunal] } : p;
+      if (alvo.tribunal && !["STF", "STJ"].includes(alvo.tribunal)) return ok({ status: "NAO_RECONHECIDA", observacao: "Só STF e STJ." });
+      const r = await localizarJulgado(acervo, alvo, { relator, data, ementas, atualizar, fetchImpl: opts.fetchImpl });
+      const resumo = resumoLocalizacao(r);
+      return ok({
+        ...resumo,
+        // aqui o julgado citado também entra na lista de cada processo
+        processos: resumo.processos.map((x, i) => ({ ...x, julgados_por_especie: agruparPorEspecie(r.processos[i].julgados) })),
+      });
+    }),
+  );
+
+  /** Resposta enxuta da localização ao vivo (julgados do processo agrupados por espécie). */
+  const resumoLocalizacao = (r: ResultadoLocalizacao) => ({
+    status: r.status,
+    citacao: r.citacao?.forma,
+    tribunal: r.citacao?.tribunal,
+    observacao: r.observacao,
+    julgado_citado: r.julgado_citado,
+    divergencias: r.divergencias.length ? r.divergencias : undefined,
+    processos: r.processos.map((p) => ({
+      tribunal: p.tribunal,
+      classe: p.classe,
+      numero_unico: p.numero_unico,
+      registro: p.registro ?? undefined,
+      relator_atual: p.relator,
+      redator_acordao: p.redator_acordao ?? undefined,
+      relator_ultimo_incidente: p.relator_ultimo_incidente ?? undefined,
+      orgao_julgador: p.orgao_julgador ?? undefined,
+      autuacao: p.autuacao,
+      origem: p.origem,
+      transito_em_julgado: p.transito_em_julgado,
+      url: p.url,
+      julgados_por_especie: agruparPorEspecie(p.julgados.filter((j) => j !== r.julgado_citado)),
+      consultado_em: p.consultado_em,
+      falhas: p.falhas.length ? p.falhas : undefined,
+    })),
+    fontes_consultadas: r.fontes_consultadas,
+  });
+
+  /** CNJ completo: DV inválido vira sugestão (DV corrigido, conferido no DataJud), nunca confirmação. */
+  const verificarCnj = async (numero: string, extra?: ExtraFerramenta) => {
+    const consulta = async (n: string) => {
+      try {
+        const r = await processoDataJud(n, 0, extra);
+        return { encontrado: r.processos.length > 0, processos: r.processos.map(({ movimentos, ...p }) => p), indice: r.alias, consultado_em: r.consultado_em };
+      } catch (e) {
+        return { encontrado: null, erro: (e as Error).message };
+      }
+    };
+    const fontes = (x: { encontrado: boolean | null; erro?: string }) => [
+      { fonte: "DataJud/CNJ", status: x.encontrado === null ? "erro" : x.encontrado ? "ok" : "nao_encontrado", erro: x.erro },
+    ];
+    if (!cnjValido(numero)) {
+      const corrigido = corrigirDv(numero)!;
+      const r = await consulta(corrigido);
+      return {
+        status: "DIVERGENCIA",
+        citacao: formatarCnj(numero),
+        divergencias: [
+          {
+            campo: "numero", motivo: "dv_cnj_invalido", explicavel: false, informado: formatarCnj(numero), encontrado: formatarCnj(corrigido),
+            explicacao:
+              `O dígito verificador não confere. Com os demais dígitos como estão, o DV correto seria ${corrigido.slice(7, 9)}. ` +
+              "Se o erro estiver em outro dígito (sequencial, ano, origem), esta correção não vale: confira nos autos.",
+          },
+        ],
+        sugestao: { numero: formatarCnj(corrigido), localizado_no_datajud: r.encontrado, processos: r.processos, observacao: "Sugestão, não confirmação." },
+        fontes_consultadas: fontes(r),
+      };
+    }
+    const r = await consulta(numero);
+    if (r.encontrado === null) {
+      return {
+        status: "INDISPONIVEL",
+        citacao: formatarCnj(numero),
+        observacao: `Não foi possível consultar o DataJud agora: ${r.erro}. Não afirme que o processo não existe. A consulta continua em segundo plano e fica guardada: repetir em alguns minutos deve ser rápido.`,
+        fontes_consultadas: fontes(r),
+      };
+    }
+    return r.encontrado
+      ? { status: "CONFIRMADO", fonte: "DataJud/CNJ", processos: r.processos, consultado_em: r.consultado_em, fontes_consultadas: fontes(r) }
+      : {
+          status: "NAO_ENCONTRADO",
+          citacao: formatarCnj(numero),
+          observacao:
+            `Processo não localizado no DataJud (${r.indice}). O DataJud não traz processos sigilosos e alguns tribunais enviam os ` +
+            "dados com atraso ou de forma incompleta: isso não prova que o processo não existe.",
+          fontes_consultadas: fontes(r),
+        };
+  };
+
+  /** Número CNJ incompleto: monta os candidatos compatíveis e confere cada um no DataJud. */
+  const verificarCnjIncompleto = async (digitos: string, extra?: ExtraFerramenta) => {
+    const candidatos = candidatosCnj(digitos).slice(0, 3);
+    const conferidos = await Promise.all(
+      candidatos.map(async (c) => {
+        try {
+          const r = await processoDataJud(c.numero, 0, extra);
+          return { ...c, localizado_no_datajud: r.processos.length > 0, processos: r.processos.map(({ movimentos, ...p }) => p) };
+        } catch (e) {
+          return { ...c, localizado_no_datajud: null, erro: (e as Error).message };
+        }
+      }),
+    );
+    return {
+      status: "INCOMPLETO",
+      informado: digitos,
+      observacao:
+        `O número tem ${digitos.length} dígitos (o CNJ tem 20). Lido da direita (origem, tribunal, segmento e ano), estes são os ` +
+        "números completos compatíveis. São sugestões: confirme nos autos antes de citar.",
+      candidatos: conferidos.map(({ numero, ...x }) => x),
+      fontes_consultadas: [{ fonte: "DataJud/CNJ", status: conferidos.some((c) => c.localizado_no_datajud === null) ? "erro" : "ok" }],
+    };
+  };
 
   server.registerTool(
     "consultar_processo",
@@ -876,7 +1062,20 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         acervo_local: acervo.estatisticas(),
         legislacao_consolidada: normasIndexadas(acervo),
         pesquisa_ao_vivo: (opts.fontes ?? []).map((f) => ({ fonte: f.nome, tribunais: f.tribunais, consultada_por_padrao: f.padrao })),
-        outras_consultas: ["DataJud/CNJ (metadados e movimentações processuais)", "Catálogo de legislação do Senado"],
+        outras_consultas: [
+          "STF por classe e número (localizar_julgado, verificar_citacao): portal de processos e pesquisa de jurisprudência, todo o acervo do tribunal",
+          "STJ por classe e número (localizar_julgado, verificar_citacao): consulta processual, todo o acervo do tribunal, com acórdãos e monocráticas",
+          "DataJud/CNJ (metadados e movimentações processuais)",
+          "Catálogo de legislação do Senado",
+        ],
+        nao_conectados: {
+          "STJ — pesquisa de jurisprudência por tema (SCON)": "exige reCAPTCHA; por tema, o STJ vem do acervo local (espelhos) e, por número, da consulta processual",
+          "TJMG, TJGO, e-SAJ do TJSP e do TJCE": "exigem captcha",
+          TRF6: "bloqueio anti-robô",
+          "TJRS, TJMS, TJAM, TJPE, TRF1, TRF3": "portais sem resposta nos testes (podem responder a partir do Brasil)",
+          "TJRS — numeração anterior ao CNJ": "a conversão para o número CNJ depende da consulta do próprio TJRS",
+        },
+        cobertura_acervo: acervo.coberturaAcervo(["STF", "STJ"]),
         atualizacao: opts.permitirAtualizacao ? estadoAtualizacao() : undefined,
       }),
     ),

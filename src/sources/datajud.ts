@@ -105,6 +105,7 @@ export async function consultarProcesso(
     aoRenovarChave?: (chave: string) => void;
     maxMovimentos?: number;
     prazoMs?: number;
+    esperaRetentativaMs?: number;
     fetchImpl?: typeof fetch;
   } = {},
 ): Promise<{ alias: string; processos: ProcessoDataJud[] }> {
@@ -114,7 +115,7 @@ export async function consultarProcesso(
   const f = opts.fetchImpl ?? fetch;
   const prazo = opts.prazoMs ?? PRAZO_DATAJUD_MS;
 
-  const consultar = (chave: string) =>
+  const umaVez = (chave: string) =>
     f(`${BASE}/api_publica_${alias}/_search`, {
       method: "POST",
       headers: { Authorization: `APIKey ${chave}`, "Content-Type": "application/json" },
@@ -126,6 +127,17 @@ export async function consultarProcesso(
       }
       throw e;
     });
+  // falha rápida de rede ou 429/5xx: uma nova tentativa depois de 2 s (o prazo longo não se repete)
+  const consultar = async (chave: string) => {
+    try {
+      const r = await umaVez(chave);
+      if (r.status !== 429 && r.status < 500) return r;
+    } catch (e) {
+      if (/não respondeu em/.test((e as Error).message)) throw e;
+    }
+    await new Promise((ok) => setTimeout(ok, opts.esperaRetentativaMs ?? 2000));
+    return umaVez(chave);
+  };
 
   let resp = await consultar(opts.chave ?? opts.chavePublica ?? CHAVE_PUBLICA);
   if ((resp.status === 401 || resp.status === 403) && !opts.chave) {

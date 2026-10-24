@@ -8,9 +8,10 @@ import { importarCatalogo } from "./legislacao/importar.js";
 import { ingerirEspelhos, ingerirTemas } from "./ingest/stj.js";
 import { ingerirEnunciadosTst } from "./ingest/tst.js";
 import { ingerirBnp } from "./ingest/bnp.js";
+import { ingerirControleConcentradoStf } from "./ingest/stf-api.js";
 import { vetorizarPendentes } from "./vetorizar.js";
 
-export const ETAPAS = ["legislacao", "stj", "tst", "bnp", "vetorizar"] as const;
+export const ETAPAS = ["legislacao", "stf", "stj", "tst", "bnp", "vetorizar"] as const;
 export type Etapa = (typeof ETAPAS)[number];
 
 export interface EstadoAtualizacao {
@@ -27,7 +28,12 @@ const estado: EstadoAtualizacao = { em_andamento: false, etapa_atual: null, inic
 export const estadoAtualizacao = (): EstadoAtualizacao => ({ ...estado, registro: estado.registro.slice(-15) });
 
 /** Inicia a atualização (se não houver outra em curso) e retorna sem esperar o fim. */
-export function iniciarAtualizacao(acervo: Acervo, etapas: Etapa[], embedder?: Embedder | null): EstadoAtualizacao {
+export function iniciarAtualizacao(
+  acervo: Acervo,
+  etapas: Etapa[],
+  embedder?: Embedder | null,
+  aoTerminar?: () => void,
+): EstadoAtualizacao {
   if (estado.em_andamento) return estadoAtualizacao();
   Object.assign(estado, { em_andamento: true, etapa_atual: null, iniciada_em: new Date().toISOString(), concluida_em: null, registro: [], erros: [] });
   const log = (m: string) => {
@@ -39,6 +45,7 @@ export function iniciarAtualizacao(acervo: Acervo, etapas: Etapa[], embedder?: E
       estado.etapa_atual = etapa;
       try {
         if (etapa === "legislacao") await importarCatalogo(acervo, undefined, log);
+        if (etapa === "stf") await ingerirControleConcentradoStf(acervo, { meses: 6, log });
         if (etapa === "stj") {
           await ingerirTemas(acervo, { log });
           await ingerirEspelhos(acervo, { meses: 2, log });
@@ -56,6 +63,30 @@ export function iniciarAtualizacao(acervo: Acervo, etapas: Etapa[], embedder?: E
       }
     }
     Object.assign(estado, { em_andamento: false, etapa_atual: null, concluida_em: new Date().toISOString() });
+    aoTerminar?.();
   })();
   return estadoAtualizacao();
+}
+
+const SEMANA_MS = 7 * 86_400_000;
+
+/**
+ * Atualização automática semanal (pacote do Mac): se a última passou de 7 dias, atualiza em
+ * segundo plano legislação, STF (controle concentrado), STJ, TST e BNP. A trava entre processos
+ * evita que as várias cópias do servidor abertas pelo Claude Desktop atualizem ao mesmo tempo.
+ */
+export function agendarAtualizacaoAutomatica(
+  acervo: Acervo,
+  opts: { trava: (nome: string) => (() => void) | null; aoTerminar?: () => void; intervaloMs?: number },
+): boolean {
+  const ultima = acervo.lerMeta("atualizacao_automatica_em") ?? acervo.coberturaAcervo([]).atualizado_em;
+  if (ultima && Date.now() - Date.parse(ultima) < (opts.intervaloMs ?? SEMANA_MS)) return false;
+  const liberar = opts.trava("atualizando");
+  if (!liberar) return false;
+  acervo.gravarMeta("atualizacao_automatica_em", new Date().toISOString());
+  iniciarAtualizacao(acervo, ["legislacao", "stf", "stj", "tst", "bnp"], null, () => {
+    liberar();
+    opts.aoTerminar?.();
+  });
+  return true;
 }

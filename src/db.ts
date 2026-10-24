@@ -181,6 +181,25 @@ export class Acervo {
     this.dimensoesVetor = dimensoes;
   }
 
+  /**
+   * Cobertura do acervo local por tribunal e tipo: quantos documentos, de que período (data de
+   * corte) e quando a base foi atualizada pela última vez. Ajuda a ler um "não encontrado".
+   */
+  coberturaAcervo(tribunais?: string[]): {
+    atualizado_em: string | null;
+    tribunais: { tribunal: string; tipo: string; documentos: number; julgados_de: string | null; julgados_ate: string | null }[];
+  } {
+    const filtro = tribunais?.length ? `WHERE tribunal IN (${tribunais.map(() => "?").join(",")})` : "";
+    const linhas = this.db
+      .prepare(
+        `SELECT tribunal, tipo, COUNT(*) documentos, MIN(data_julgamento) julgados_de, MAX(data_julgamento) julgados_ate
+         FROM documentos ${filtro} GROUP BY 1, 2 ORDER BY 1, 2`,
+      )
+      .all(...(tribunais ?? []).map((t) => t.toUpperCase())) as { tribunal: string; tipo: string; documentos: number; julgados_de: string | null; julgados_ate: string | null }[];
+    const atualizado = (this.db.prepare("SELECT MAX(importado_em) t FROM ingestoes").get() as { t: string | null }).t;
+    return { atualizado_em: atualizado, tribunais: linhas.map((l) => ({ ...l })) };
+  }
+
   /** Fração (0 a 1) de documentos e de dispositivos legais que já têm vetor. */
   coberturaVetores(): { documentos: number; dispositivos: number } {
     if (!this.temVetores) return { documentos: 0, dispositivos: 0 };
