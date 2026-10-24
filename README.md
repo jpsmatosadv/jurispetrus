@@ -98,7 +98,22 @@ Ficam de fora os portais que exigem captcha ou desafio anti-robô (e-SAJ do TJSP
 
 ### Busca semântica
 
-Além das palavras (BM25), a pesquisa pode comparar o significado da pergunta com o dos julgados: "negativação indevida" encontra "apontamento no SPC sem notificação". Para ativar, escolha um provedor de embeddings e vetorize o acervo:
+Além das palavras (BM25), a pesquisa pode comparar o significado da pergunta com o dos julgados: "usucapião de terreno da prefeitura" encontra "bens públicos não podem ser adquiridos por usucapião".
+
+**Local, sem API (padrão no pacote do Mac):** o modelo `granite-embedding-107m-multilingual` (IBM, Apache 2.0), quantizado
+em int8 (≈107 MB), roda no próprio computador pelo `onnxruntime-node`. No pacote, os vetores são gerados em segundo plano
+na primeira execução (alguns minutos para as cerca de 27 mil ementas e artigos) e, depois, para cada julgado novo trazido
+dos portais; o andamento aparece em `listar_fontes` (`busca_semantica`). Limites: o onnxruntime-node em uso só publica
+binário de macOS para Apple Silicon (no Mac Intel a busca segue por palavras), e o modelo é pequeno, então não substitui os
+sinônimos jurídicos (ex.: não aproxima "negativação" de "apontamento no SPC"; o dicionário de sinônimos cobre esse caso).
+
+```bash
+npm run modelo                  # baixa (revisão fixa, SHA-256 conferido) e quantiza o modelo; requer pip install onnx onnxruntime
+export JURIS_EMBEDDINGS=local
+npm run vetorizar               # ou JURIS_VETORIZAR_FUNDO=1 para vetorizar em segundo plano ao iniciar o servidor
+```
+
+**Por API:**
 
 ```bash
 # Voyage AI
@@ -155,10 +170,10 @@ claude mcp add --transport http jurispetrus https://seu-dominio/mcp --header "Au
 O jeito mais simples: tudo roda no seu computador, sem servidor nem URL pública.
 
 1. Abra o arquivo `jurispetrus-mac.mcpb` com o Claude Desktop (duplo clique, ou arraste para Configurações → Extensões).
-2. Na tela de instalação, as chaves são opcionais: a do Claude ativa a análise automática no servidor; a da Voyage ativa a busca semântica.
+2. Na tela de instalação, a chave do Claude é opcional e ativa a análise automática no servidor. A busca semântica é local e já vem ativa (Apple Silicon).
 3. Pronto. Na primeira execução, a base inicial (STF, STJ, TST, precedentes do CNJ e legislação) é copiada para `~/Library/Application Support/JurisPetrus`.
 
-Para atualizar a base, peça ao Claude: "atualize o acervo do JurisPetrus". A ferramenta `atualizar_acervo` roda em segundo plano (legislação, STJ, TST e BNP; com chave da Voyage, também a vetorização), e o andamento aparece em `listar_fontes`.
+Para atualizar a base, peça ao Claude: "atualize o acervo do JurisPetrus". A ferramenta `atualizar_acervo` roda em segundo plano (legislação, STJ, TST, BNP e vetorização), e o andamento aparece em `listar_fontes`.
 
 Requer Node.js 22.13 ou superior. O Claude Desktop traz Node embutido; se a extensão avisar que a versão é antiga, instale o Node 22 (nodejs.org) e desative "Usar Node.js embutido" nas configurações de extensões. O pacote não é assinado, então o Claude Desktop pode pedir confirmação na instalação.
 
@@ -202,7 +217,9 @@ Variáveis de ambiente (veja `.env.example`):
 | `JURIS_ALLOWED_HOSTS` | vazio | Proteção contra DNS rebinding |
 | `JURIS_COTA_MENSAL` | `0` | Limite de chamadas por chave por mês (0 = ilimitado) |
 | `DATAJUD_API_KEY` | chave pública do CNJ | Chave própria do DataJud, se tiver (se a pública for recusada, a vigente é lida na wiki do CNJ) |
-| `JURIS_EMBEDDINGS` | `nenhum` | `voyage` ou `openai` para ativar a busca semântica |
+| `JURIS_EMBEDDINGS` | `nenhum` | `local`, `voyage` ou `openai` para ativar a busca semântica |
+| `JURIS_MODELO_LOCAL` | `modelos/granite-embedding-107m-multilingual` | Pasta do modelo local |
+| `JURIS_VETORIZAR_FUNDO` | — | `1` vetoriza em segundo plano ao iniciar (só com `local`) |
 | `JURIS_EMBEDDINGS_MODEL` / `_DIM` / `_URL` | por provedor | Modelo, dimensão e endpoint dos embeddings |
 | `VOYAGE_API_KEY` / `JURIS_EMBEDDINGS_KEY` | vazio | Chave do provedor de embeddings |
 | `JURIS_TIMEOUT_FONTES` | `25000` | Tempo-limite (ms) de cada portal consultado ao vivo |
@@ -230,7 +247,9 @@ src/
   db.ts              esquema SQLite + índice FTS5
   search.ts          ranqueamento (BM25 + autoridade + atualidade)
   citation.ts        interpretação e verificação de citações
-  embeddings.ts      provedores de embeddings (Voyage, compatível com OpenAI)
+  embeddings.ts      provedores de embeddings (local, Voyage, compatível com OpenAI)
+  embeddings-local.ts  modelo de embeddings local (ONNX), sem API
+  vetorizar-fundo.ts   vetorização em segundo plano, com trava entre processos
   vetorizar.ts       vetorização incremental do acervo
   federado.ts        pesquisa paralela nas fontes ao vivo, com tempo-limite
   fontes/            conectores ao vivo (eproc, e-SAJ, TJDFT, TJPR, TJBA, TJES, TRF5, TST, CARF, TCU)

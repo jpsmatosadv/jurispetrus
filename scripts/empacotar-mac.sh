@@ -11,6 +11,8 @@ VERSAO="$(node -p "require('./package.json').version")"
 SQLITE_VEC="$(node -p "require('./package.json').dependencies['sqlite-vec'].replace(/^[^0-9]*/, '')")"
 
 [ -f "$BASE" ] || { echo "Base não encontrada: $BASE (rode npm run ingest antes)"; exit 1; }
+MODELO="modelos/granite-embedding-107m-multilingual"
+[ -f "$MODELO/model_quantized.onnx" ] || scripts/baixar-modelo.sh
 
 echo "» compilando"
 npm run build >/dev/null
@@ -39,6 +41,15 @@ for arq in sqlite-vec-darwin-arm64 sqlite-vec-darwin-x64; do
   [ -d "$PASTA/node_modules/$arq" ] || { echo "Faltou $arq"; exit 1; }
 done
 rm -rf "$PASTA/node_modules/sqlite-vec-linux-"* "$PASTA/node_modules/sqlite-vec-windows-"*
+# onnxruntime-node traz binários de todas as plataformas; o pacote leva só o do macOS
+# (Apple Silicon; a versão em uso não publica binário para Mac Intel, que fica só com a busca por palavras)
+ORT="$PASTA/node_modules/onnxruntime-node/bin/napi-v6"
+[ -f "$ORT/darwin/arm64/onnxruntime_binding.node" ] || { echo "Faltou o onnxruntime para darwin/arm64"; exit 1; }
+find "$ORT" -mindepth 1 -maxdepth 1 ! -name darwin -exec rm -rf {} +
+
+echo "» modelo da busca semântica local"
+mkdir -p "$PASTA/modelos"
+cp -R "$MODELO" "$PASTA/modelos/"
 
 echo "» base inicial (compactada, sem cache de análises e sem o índice textual, refeito na 1ª execução)"
 node --no-warnings -e "

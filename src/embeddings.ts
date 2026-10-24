@@ -4,7 +4,9 @@
  *  - voyage: API da Voyage AI (https://docs.voyageai.com/reference/embeddings-api)
  *  - openai: qualquer endpoint compatível com /v1/embeddings da OpenAI
  *            (OpenAI, Ollama, LM Studio, Text Embeddings Inference, vLLM...)
+ *  - local:  modelo que roda no próprio computador, sem API (ver embeddings-local.ts)
  */
+import { LocalEmbedder } from "./embeddings-local.js";
 
 export type TipoTexto = "documento" | "consulta";
 
@@ -16,7 +18,7 @@ export interface Embedder {
 }
 
 export interface ConfigEmbeddings {
-  provedor: "voyage" | "openai" | "nenhum";
+  provedor: "voyage" | "openai" | "local" | "nenhum";
   modelo?: string;
   dimensoes?: number;
   url?: string;
@@ -113,6 +115,8 @@ export function criarEmbedder(c: ConfigEmbeddings): Embedder | null {
     case "voyage":
       if (!c.chave) throw new Error("Defina VOYAGE_API_KEY para usar embeddings da Voyage AI.");
       return new VoyageEmbedder(c.modelo ?? "voyage-3.5", c.dimensoes ?? 1024, c.chave, fetchImpl);
+    case "local":
+      return new LocalEmbedder();
     case "openai":
       return new OpenAICompativelEmbedder(
         c.url ?? "https://api.openai.com/v1",

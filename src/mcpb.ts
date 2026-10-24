@@ -139,7 +139,7 @@ async function modoInstalacao(): Promise<void> {
     "1. Baixe e instale o Node.js LTS em https://nodejs.org (instalador para macOS).\n" +
     "2. Feche o Claude Desktop por completo (Cmd+Q) e abra de novo.\n" +
     "A extensão encontra o Node.js instalado sozinha; não é preciso mudar nenhuma configuração.";
-  const server = new McpServer({ name: "jurispetrus", version: "0.1.5" }, { instructions: orientacao });
+  const server = new McpServer({ name: "jurispetrus", version: "0.2.0" }, { instructions: orientacao });
   server.registerTool(
     "jurispetrus_instalacao",
     {
@@ -204,8 +204,15 @@ async function iniciar(): Promise<void> {
   // Campos opcionais vazios na configuração da extensão desligam o recurso correspondente.
   const vazio = (v: string | undefined) => !v || !v.trim() || v.startsWith("${");
   if (vazio(process.env.ANTHROPIC_API_KEY)) delete process.env.ANTHROPIC_API_KEY;
-  if (vazio(process.env.VOYAGE_API_KEY)) delete process.env.VOYAGE_API_KEY;
-  else process.env.JURIS_EMBEDDINGS ??= "voyage";
+  // Busca semântica local (modelo no pacote, sem API): os vetores que faltam são gerados em
+  // segundo plano, na 1ª execução o acervo todo (alguns minutos).
+  const { modeloLocalPresente } = await import("./embeddings-local.js");
+  if (modeloLocalPresente()) {
+    process.env.JURIS_EMBEDDINGS = "local";
+    process.env.JURIS_VETORIZAR_FUNDO = "1";
+  } else {
+    registrar("Modelo da busca semântica local ausente: busca só por palavras.");
+  }
 
   await import("./stdio.js");
   registrar("Servidor iniciado");

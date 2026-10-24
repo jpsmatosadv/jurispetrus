@@ -181,6 +181,11 @@ export class Acervo {
     this.dimensoesVetor = dimensoes;
   }
 
+  /** Modelo com que o índice vetorial foi criado (ex.: 'local:granite-...:384'), se houver. */
+  get modeloVetorial(): string | null {
+    return this.temVetores ? this.lerMeta("vetor_modelo") : null;
+  }
+
   get temVetores(): boolean {
     return this.dimensoesVetor !== null;
   }
@@ -333,7 +338,14 @@ export class Acervo {
       .all();
     const ultimaIngestao = (this.db.prepare("SELECT MAX(importado_em) t FROM ingestoes").get() as { t: string | null }).t;
     const busca_semantica = this.temVetores
-      ? { modelo: this.lerMeta("vetor_modelo"), documentos_vetorizados: this.contarVetores() }
+      ? {
+          modelo: this.lerMeta("vetor_modelo"),
+          documentos_vetorizados: this.contarVetores(),
+          documentos_sem_vetor: total - this.contarVetores(),
+          dispositivos_sem_vetor: (
+            this.db.prepare("SELECT COUNT(*) n FROM dispositivos d WHERE NOT EXISTS (SELECT 1 FROM dispositivos_vec v WHERE v.rowid = d.rowid)").get() as { n: number }
+          ).n,
+        }
       : null;
     return { total, porTribunal, ultimaIngestao, busca_semantica };
   }

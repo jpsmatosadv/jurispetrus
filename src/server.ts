@@ -116,7 +116,8 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
 
   /** Vetor da consulta para a busca semântica; falha silenciosa cai na busca lexical. */
   const vetorDaConsulta = async (consulta: string): Promise<Float32Array | null> => {
-    if (!opts.embedder || !acervo.temVetores) return null;
+    // vetores de modelos diferentes não são comparáveis
+    if (!opts.embedder || acervo.modeloVetorial !== opts.embedder.id) return null;
     try {
       return (await opts.embedder.vetorizar([consulta], "consulta"))[0];
     } catch (e) {
@@ -133,7 +134,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         ? pesquisarAoVivo(acervo, opts.fontes, args, {
             timeoutMs: opts.timeoutFontes ?? 25_000,
             fetchImpl: opts.fetchImpl,
-            embedder: opts.embedder,
+            embedder: opts.embedder && acervo.modeloVetorial === opts.embedder.id ? opts.embedder : null,
           })
         : Promise.resolve([] as RelatorioFonte[]),
       vetorDaConsulta(args.consulta),

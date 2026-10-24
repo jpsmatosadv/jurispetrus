@@ -35,8 +35,7 @@
       "env": {
         "NODE_NO_WARNINGS": "1",
         "JURIS_DIR_DADOS": "${user_config.pasta_dados}",
-        "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}",
-        "VOYAGE_API_KEY": "${user_config.voyage_api_key}"
+        "ANTHROPIC_API_KEY": "${user_config.anthropic_api_key}"
       }
     }
   },
@@ -97,13 +96,6 @@
       "type": "string",
       "title": "Chave da API do Claude (opcional)",
       "description": "Ativa a extração automática da razão de decidir e a decomposição dos fatos no servidor. Sem ela, o próprio Claude da conversa faz essas análises.",
-      "sensitive": true,
-      "required": false
-    },
-    "voyage_api_key": {
-      "type": "string",
-      "title": "Chave da Voyage AI (opcional)",
-      "description": "Ativa a busca semântica (por significado). Depois de informar, peça ao Claude para atualizar o acervo com a etapa 'vetorizar'.",
       "sensitive": true,
       "required": false
     },
