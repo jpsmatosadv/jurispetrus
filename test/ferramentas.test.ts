@@ -24,7 +24,7 @@ function analistaFalso() {
       chamadas.questoes++;
       return {
         resumo_dos_fatos: "Negativação sem contrato.", ramos_do_direito: ["Consumidor"],
-        questoes: [{ questao: "Responsabilidade por inscrição indevida", termos_jurisprudencia: "inscrição indevida cadastro inadimplentes dano moral", termos_legislacao: "responsabilidade do fornecedor defeito do serviço", normas_provaveis: ["CDC, art. 14"] }],
+        questoes: [{ questao: "Responsabilidade por inscrição indevida", termos_jurisprudencia: "inscrição indevida cadastro inadimplentes dano moral", consultas_alternativas: ["negativação indevida dano moral"], termos_legislacao: "responsabilidade do fornecedor defeito do serviço", normas_provaveis: ["CDC, art. 14"] }],
         fatos_a_esclarecer: ["Se havia anotação preexistente"], tribunais_sugeridos: [],
       };
     },

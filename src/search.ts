@@ -1,7 +1,14 @@
 import type { Acervo, Autoridade, Documento } from "./db.js";
+import { expandirSinonimos } from "./sinonimos.js";
 
 export interface FiltrosPesquisa {
   consulta: string;
+  /** Outras formulações da mesma pesquisa; o julgado que aparece em várias sobe no ranking. */
+  consultas_alternativas?: string[];
+  /** Amplia a consulta com expressões jurídicas equivalentes (padrão: sim). */
+  usar_sinonimos?: boolean;
+  /** Relevância mínima, de 0 a 1, relativa ao melhor resultado (padrão 0,2). */
+  relevancia_minima?: number;
   tribunais?: string[];
   autoridade_minima?: Autoridade;
   orgao?: string;
@@ -27,6 +34,8 @@ export interface ResultadoPesquisa {
   tese: string | null;
   fonte_url: string | null;
   pontuacao: number;
+  /** Ids de outras cópias do mesmo julgado (vindas de outra fonte), omitidas da lista. */
+  outras_fontes?: string[];
 }
 
 const PESO_AUTORIDADE: Record<Autoridade, number> = { A: 1, B: 0.85, C: 0.6, D: 0.4, E: 0.15 };
@@ -43,8 +52,10 @@ const STOPWORDS = new Set(
  * Converte a consulta livre do usuário em expressão FTS5 segura.
  * Mantém frases entre aspas, descarta operadores e stopwords e une os termos com OR,
  * deixando a relevância (BM25) premiar documentos que contêm mais termos.
+ * As 'expansoes' (sinônimos) entram como expressões de proximidade: "inscricao indevida"
+ * vira NEAR(inscric* indevid*), que casa também "inscrições indevidas".
  */
-export function montarConsultaFts(consulta: string): string | null {
+export function montarConsultaFts(consulta: string, expansoes: string[] = []): string | null {
   const partes: string[] = [];
   const frases = [...consulta.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   const resto = consulta.replace(/"[^"]*"/g, " ");
@@ -55,11 +66,21 @@ export function montarConsultaFts(consulta: string): string | null {
   }
   for (const termo of tokenizar(resto)) {
     if (STOPWORDS.has(termo) || termo.length < 2) continue;
-    // radical + prefixo para palavras longas ("indeniz*" casa "indenização", "indenizatória", "indenizar")
-    partes.push(termo.length >= 7 ? `${radical(termo)}*` : `"${termo}"`);
+    partes.push(termoFts(termo));
+  }
+  for (const e of expansoes) {
+    const todos = tokenizar(e);
+    const termos = todos.filter((t) => !STOPWORDS.has(t));
+    if (!termos.length) continue;
+    partes.push(termos.length === 1 ? termoFts(termos[0]) : `NEAR(${termos.map(termoFts).join(" ")}, ${todos.length - termos.length + 2})`);
   }
   const unicos = [...new Set(partes)];
   return unicos.length ? unicos.join(" OR ") : null;
+}
+
+/** Radical + prefixo para palavras longas ("indeniz*" casa "indenização", "indenizatória", "indenizar"). */
+function termoFts(termo: string): string {
+  return termo.length >= 7 ? `${radical(termo)}*` : `"${termo}"`;
 }
 
 /** Sufixos (sem acento) removidos para obter o radical; os mais longos primeiro. */
@@ -147,7 +168,9 @@ function filtrosSql(f: FiltrosPesquisa): { where: string[]; params: (string | nu
 
 const CANDIDATOS = 300;
 
-function viaLexical(acervo: Acervo, f: FiltrosPesquisa, fts: string, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>) {
+/** Pesquisa textual de uma formulação; devolve a relevância normalizada (0 a 1) de cada candidato. */
+function viaLexical(acervo: Acervo, fts: string, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>): Map<number, number> {
+  const notas = new Map<number, number>();
   // Pesos das colunas no BM25: titulo, ementa, tese, inteiro_teor, referencias, assuntos
   const sql = `
     SELECT d.rowid AS _rowid, d.*, bm25(documentos_fts, 4.0, 3.0, 4.0, 1.0, 1.5, 2.0) AS _bm25,
@@ -156,15 +179,18 @@ function viaLexical(acervo: Acervo, f: FiltrosPesquisa, fts: string, filtros: Re
     WHERE ${["documentos_fts MATCH ?", ...filtros.where].join(" AND ")}
     ORDER BY _bm25 LIMIT ${CANDIDATOS}`;
   const linhas = acervo.db.prepare(sql).all(fts, ...filtros.params) as any[];
-  if (!linhas.length) return;
-  // bm25 é negativo (quanto menor, melhor); normaliza para [0,1]
+  if (!linhas.length) return notas;
+  // bm25 é negativo (quanto menor, melhor); a nota é a proporção em relação ao melhor, em (0, 1].
+  // (Normalizar pelo intervalo zeraria o último candidato mesmo quando ele é quase tão bom.)
   const melhor = Math.min(...linhas.map((l) => l._bm25));
-  const pior = Math.max(...linhas.map((l) => l._bm25));
-  const faixa = pior - melhor || 1;
   for (const l of linhas) {
     const { _rowid, _bm25, _trecho, ...doc } = l;
-    mapa.set(_rowid, { doc, trecho: _trecho, lexical: 1 - (_bm25 - melhor) / faixa, semantica: 0 });
+    notas.set(_rowid, melhor < 0 ? _bm25 / melhor : 1);
+    const atual = mapa.get(_rowid);
+    if (!atual) mapa.set(_rowid, { doc, trecho: _trecho, lexical: 0, semantica: 0 });
+    else atual.trecho ??= _trecho;
   }
+  return notas;
 }
 
 function viaSemantica(acervo: Acervo, vetor: Float32Array, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>) {
@@ -213,15 +239,40 @@ export function pesquisar(
   acervo: Acervo,
   f: FiltrosPesquisa,
   opts: OpcoesPesquisa = {},
-): { total_candidatos: number; modo: "hibrido" | "lexical"; resultados: ResultadoPesquisa[] } {
+): {
+  total_candidatos: number;
+  modo: "hibrido" | "lexical";
+  consultas: number;
+  sinonimos_usados?: string[];
+  duplicatas_agrupadas?: number;
+  descartados_por_baixa_relevancia?: number;
+  resultados: ResultadoPesquisa[];
+} {
   const filtros = filtrosSql(f);
   const mapa = new Map<number, Candidato>();
-  const fts = montarConsultaFts(f.consulta);
-  if (fts) viaLexical(acervo, f, fts, filtros, mapa);
+
+  // Cada formulação é pesquisada à parte; a relevância textual é a média entre elas
+  // (ausente = 0), de modo que o julgado encontrado por várias formulações sobe.
+  const formulacoes = [f.consulta, ...(f.consultas_alternativas ?? [])]
+    .map((q) => q.trim())
+    .filter((q, i, arr) => q.length >= 2 && arr.indexOf(q) === i)
+    .slice(0, 6);
+  const sinonimos = new Set<string>();
+  const notasPorConsulta: Map<number, number>[] = [];
+  for (const q of formulacoes) {
+    const expansoes = f.usar_sinonimos === false ? [] : expandirSinonimos(q);
+    expansoes.forEach((e) => sinonimos.add(e));
+    const fts = montarConsultaFts(q, expansoes);
+    if (fts) notasPorConsulta.push(viaLexical(acervo, fts, filtros, mapa));
+  }
+  for (const [rowid, c] of mapa) {
+    const soma = notasPorConsulta.reduce((t, n) => t + (n.get(rowid) ?? 0), 0);
+    c.lexical = notasPorConsulta.length ? soma / notasPorConsulta.length : 0;
+  }
   const hibrido = !!opts.vetorConsulta && acervo.temVetores;
   if (hibrido) viaSemantica(acervo, opts.vetorConsulta!, filtros, mapa);
 
-  const pontuados = [...mapa.values()]
+  const todos = [...mapa.values()]
     .filter((c) => f.incluir_cancelados || !SITUACOES_SUPERADAS.test(c.doc.situacao ?? ""))
     .map((c) => {
       const relevancia = hibrido ? 0.45 * c.lexical + 0.55 * c.semantica : c.lexical;
@@ -230,9 +281,29 @@ export function pesquisar(
       const atualidade = idade === null ? 0.3 : Math.exp(-idade / 8);
       let pontuacao = 0.6 * relevancia + 0.28 * autoridade + 0.12 * atualidade;
       if (SITUACOES_SUPERADAS.test(c.doc.situacao ?? "")) pontuacao *= 0.4;
-      return { c, pontuacao };
-    })
-    .sort((a, b) => b.pontuacao - a.pontuacao);
+      return { c, pontuacao, relevancia };
+    });
+
+  // Descarta o que ficou muito abaixo do melhor resultado em relevância: sem isso, uma súmula
+  // que só compartilha uma palavra com a consulta sobe pela autoridade.
+  const melhorRelevancia = Math.max(0, ...todos.map((x) => x.relevancia));
+  const corte = (f.relevancia_minima ?? 0.2) * melhorRelevancia;
+  const relevantes = todos.filter((x) => x.relevancia >= corte).sort((a, b) => b.pontuacao - a.pontuacao);
+
+  // Agrupa cópias do mesmo julgado vindas de fontes diferentes (acervo, BNP, portal do tribunal).
+  const porChave = new Map<string, (typeof relevantes)[number] & { outras: string[] }>();
+  const pontuados: (typeof relevantes[number] & { outras: string[] })[] = [];
+  for (const x of relevantes) {
+    const chave = chaveDoJulgado(x.c.doc);
+    const existente = chave ? porChave.get(chave) : undefined;
+    if (existente) {
+      existente.outras.push(x.c.doc.id);
+      continue;
+    }
+    const item = { ...x, outras: [] as string[] };
+    if (chave) porChave.set(chave, item);
+    pontuados.push(item);
+  }
 
   const limite = Math.min(Math.max(f.limite ?? 10, 1), 30);
   const inicio = (Math.max(f.pagina ?? 1, 1) - 1) * limite;
@@ -240,7 +311,11 @@ export function pesquisar(
   return {
     total_candidatos: pontuados.length,
     modo: hibrido ? "hibrido" : "lexical",
-    resultados: pontuados.slice(inicio, inicio + limite).map(({ c: { doc: l, trecho }, pontuacao }) => ({
+    consultas: formulacoes.length,
+    sinonimos_usados: sinonimos.size ? [...sinonimos] : undefined,
+    duplicatas_agrupadas: relevantes.length - pontuados.length || undefined,
+    descartados_por_baixa_relevancia: todos.length - relevantes.length || undefined,
+    resultados: pontuados.slice(inicio, inicio + limite).map(({ c: { doc: l, trecho }, pontuacao, outras }) => ({
       id: l.id,
       tribunal: l.tribunal,
       tipo: l.tipo,
@@ -254,6 +329,37 @@ export function pesquisar(
       tese: l.tese,
       fonte_url: l.fonte_url,
       pontuacao: Math.round(pontuacao * 1000) / 1000,
+      outras_fontes: outras.length ? outras : undefined,
     })),
   };
+}
+
+/**
+ * Chave que identifica o mesmo julgado em fontes diferentes (acervo, BNP, portal do tribunal):
+ * o número (CNJ de 20 dígitos ou tribunal + classe + número + órgão) somado ao início da
+ * ementa (ou da tese) normalizado; sem texto, à data do julgamento. O texto entra porque o mesmo
+ * processo tem vários julgados (apelação, embargos de cada parte...), e o órgão porque números
+ * de OJ e de súmula se repetem entre órgãos (SDI-1, SDI-2, SDC).
+ */
+export function chaveDoJulgado(
+  d: Pick<Documento, "tribunal" | "classe" | "numero" | "registro" | "titulo" | "orgao" | "data_julgamento" | "ementa" | "tese">,
+): string | null {
+  let numero: string | null = null;
+  for (const campo of [d.numero, d.registro, d.titulo]) {
+    const m = (campo ?? "").match(/\b(\d{7})-?(\d{2})\.?(\d{4})\.?(\d)\.?(\d{2})\.?(\d{4})\b/);
+    if (m) {
+      numero = `cnj:${m.slice(1).join("")}`;
+      break;
+    }
+  }
+  if (!numero && d.classe && d.numero) {
+    numero = [d.tribunal, normalizarClasse(d.classe), d.numero.replace(/\D/g, "") || d.numero, normalizarClasse(d.orgao ?? "")].join("|");
+  }
+  if (!numero) return null;
+  const texto = (d.ementa ?? d.tese ?? "").normalize("NFD").replace(/[^A-Za-z0-9]/g, "").toLowerCase().slice(0, 400);
+  return `${numero}|${texto || d.data_julgamento || ""}`;
+}
+
+function normalizarClasse(classe: string): string {
+  return classe.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }

@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Acervo } from "./db.js";
-import { pesquisar, identificacao, type FiltrosPesquisa } from "./search.js";
+import { pesquisar, identificacao, type FiltrosPesquisa, type ResultadoPesquisa } from "./search.js";
 import { verificarCitacao, interpretarCitacao } from "./citation.js";
 import { consultarProcesso, cnjValido, formatarCnj, type ProcessoDataJud } from "./sources/datajud.js";
 import { pesquisarSigen } from "./legislacao/fontes.js";
@@ -41,6 +41,11 @@ STJ (acórdãos, súmulas e repetitivos) e os precedentes qualificados de TST, T
 Para jurisprudência comum de um tribunal (TJs, TRFs, TST, CARF, TCU), informe o tribunal em 'tribunais':
 a pesquisa consulta o portal oficial dele em tempo real. Se o usuário pedir "tribunais estaduais", use 'ESTADUAIS'.
 Quando um portal estiver indisponível, diga isso ao usuário em vez de concluir que não há julgados.
+
+Para pesquisar bem: envie em consultas_alternativas de 2 a 4 outras formulações da mesma busca (sinônimos e expressões
+de ementa); num caso concreto, use triagem: true com a questão em 'contexto' e cite só os candidatos pertinentes.
+Sinônimos jurídicos usuais entram sozinhos, cópias do mesmo julgado vindas de fontes diferentes aparecem uma vez
+(campo outras_fontes) e resultados muito abaixo do melhor em relevância são descartados.
 
 Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jurídicas e chame analisar_caso com elas;
 depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
@@ -162,9 +167,39 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       description:
         "Pesquisa acórdãos e precedentes qualificados (temas repetitivos, IAC, IRDR) no acervo indexado. " +
         "Os resultados são ordenados por relevância, nível de autoridade (A a E) e atualidade. " +
-        "Use termos jurídicos do caso (ex.: 'dano moral negativação indevida') e frases entre aspas para expressões exatas.",
+        "Use termos jurídicos do caso (ex.: 'dano moral negativação indevida') e frases entre aspas para expressões exatas. " +
+        "Para melhores resultados: (1) envie em 'consultas_alternativas' de 2 a 4 outras formulações da mesma busca, com os " +
+        "sinônimos e expressões que os tribunais usam nas ementas; (2) num caso concreto, use triagem: true com a questão em " +
+        "'contexto' e escolha, entre os candidatos, os que de fato decidem a questão antes de citá-los. " +
+        "Sinônimos jurídicos usuais (ex.: negativação = inscrição indevida em cadastro de inadimplentes) são acrescentados automaticamente.",
       inputSchema: {
         consulta: z.string().min(2).describe("Termos de pesquisa em linguagem jurídica"),
+        consultas_alternativas: z
+          .array(z.string().min(2))
+          .max(5)
+          .optional()
+          .describe(
+            "Outras formulações da mesma pesquisa (ex.: para 'negativação indevida': ['inscrição indevida em cadastro de inadimplentes', " +
+              "'dano moral in re ipsa SPC Serasa']). O julgado que aparece em várias formulações sobe no ranking.",
+          ),
+        triagem: z
+          .boolean()
+          .optional()
+          .describe(
+            "Devolve até 30 candidatos para seleção por pertinência. Com a análise automática ativa, o servidor avalia cada um " +
+              "(alta/média/baixa) e devolve os pertinentes primeiro; sem ela, você recebe os candidatos resumidos para escolher.",
+          ),
+        contexto: z
+          .string()
+          .optional()
+          .describe("Questão jurídica e fatos essenciais do caso, usados na triagem (padrão: a própria consulta)"),
+        usar_sinonimos: z.boolean().optional().describe("Acrescenta expressões jurídicas equivalentes à consulta (padrão: sim)"),
+        relevancia_minima: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("Descarta resultados com relevância abaixo desta fração do melhor resultado (padrão 0,2; use 0 para não descartar)"),
         tribunais: z
           .array(z.string())
           .optional()
@@ -189,8 +224,13 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, ...entrada }) => {
-      const { r, fontes } = await buscarJurisprudencia(entrada, ao_vivo);
+    protegido("pesquisar_jurisprudencia", async ({ ao_vivo = true, triagem = false, contexto, ...entrada }) => {
+      const limite = entrada.limite ?? 10;
+      const { r, fontes } = await buscarJurisprudencia(
+        // na triagem, quem separa o pertinente é o triador: o corte de relevância fica mais baixo
+        triagem ? { ...entrada, limite: 30, pagina: 1, relevancia_minima: entrada.relevancia_minima ?? 0.05 } : entrada,
+        ao_vivo,
+      );
       if (!r.resultados.length) {
         return ok({
           estado: "SEM_RESULTADO",
@@ -198,7 +238,67 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
           fontes_consultadas: fontes,
         });
       }
-      return ok({ estado: "ENCONTRADO", ...r, fontes_consultadas: fontes.length ? fontes : undefined, aviso: avisoFalhas(fontes) });
+      const comuns = { fontes_consultadas: fontes.length ? fontes : undefined };
+      if (!triagem) return ok({ estado: "ENCONTRADO", ...r, ...comuns, aviso: avisoFalhas(fontes) });
+
+      const questao = contexto?.trim() || entrada.consulta;
+      const texto = (x: ResultadoPesquisa) => (x.tese ?? x.trecho).replace(/\s+/g, " ").slice(0, 600);
+      let avisoTriagem: string | undefined;
+      if (opts.analista) {
+        try {
+          const t = await opts.analista.triar(
+            questao,
+            r.resultados.map((x) => ({ id: x.id, identificacao: `${x.identificacao} (autoridade ${x.autoridade}, ${x.data_julgamento ?? "s/d"})`, texto: texto(x) })),
+          );
+          const avaliacao = new Map(t.avaliacoes.map((a) => [a.id, a]));
+          const ordem = { alta: 0, media: 1, baixa: 2, nenhuma: 3 } as const;
+          const avaliados = r.resultados
+            .map((x, posicao) => ({ x, posicao, a: avaliacao.get(x.id) }))
+            .filter(({ a }) => a?.pertinencia !== "nenhuma")
+            .sort((p, q) => ordem[p.a?.pertinencia ?? "baixa"] - ordem[q.a?.pertinencia ?? "baixa"] || p.posicao - q.posicao);
+          return ok({
+            estado: "ENCONTRADO",
+            ...r,
+            total_candidatos: r.total_candidatos,
+            triagem: {
+              feita_por: `ia (${opts.analista.modelo})`,
+              questao,
+              avaliados: r.resultados.length,
+              descartados_sem_pertinencia: r.resultados.length - avaliados.length,
+            },
+            resultados: avaliados.slice(0, limite).map(({ x, a }) => ({ ...x, pertinencia: a?.pertinencia ?? "nao_avaliado", motivo_pertinencia: a?.motivo })),
+            ...comuns,
+            aviso: avisoFalhas(fontes),
+          });
+        } catch (e) {
+          avisoTriagem = `Triagem automática indisponível (${(e as Error).message}); faça a seleção a partir dos candidatos abaixo.`;
+        }
+      }
+      return ok({
+        estado: "ENCONTRADO",
+        ...r,
+        resultados: r.resultados.map((x) => ({
+          id: x.id,
+          identificacao: x.identificacao,
+          autoridade: x.autoridade,
+          orgao: x.orgao,
+          data_julgamento: x.data_julgamento,
+          situacao: x.situacao,
+          texto: texto(x),
+          fonte_url: x.fonte_url,
+          outras_fontes: x.outras_fontes,
+        })),
+        triagem: {
+          feita_por: "voce",
+          questao,
+          instrucao:
+            `Classifique cada candidato pela pertinência à questão ("${questao.slice(0, 200)}"): alta (decide a mesma questão em ` +
+            "fatos semelhantes), média, baixa ou nenhuma (só coincidência de palavras). Use só os de pertinência alta e média, " +
+            "lendo os principais com obter_documento ou extrair_razao_decidir antes de citá-los.",
+        },
+        ...comuns,
+        aviso: [avisoTriagem, avisoFalhas(fontes)].filter(Boolean).join(" ") || undefined,
+      });
     }),
   );
 
@@ -648,7 +748,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       description:
         "Recebe a narrativa dos fatos e devolve, para cada questão jurídica, os dispositivos legais vigentes, os precedentes " +
         "qualificados (súmulas, temas, IRDR) e a jurisprudência pertinente, com links oficiais. Antes de chamar, decomponha a " +
-        "narrativa em 'questoes' (questão neutra + termos de busca + normas prováveis); sem 'questoes', o servidor tenta " +
+        "narrativa em 'questoes' (questão neutra + termos de busca + 2 a 4 consultas alternativas + normas prováveis); sem 'questoes', o servidor tenta " +
         "identificá-las sozinho. Informe 'tribunais' (ex.: ['STJ','TJSP']) para incluir a jurisprudência local ao vivo.",
       inputSchema: {
         narrativa: z.string().min(30).describe("Narrativa dos fatos, como contada pelo cliente"),
@@ -657,6 +757,11 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
             z.object({
               questao: z.string().describe("Questão jurídica controvertida, formulada de modo neutro"),
               termos_jurisprudencia: z.string().optional().describe("Consulta curta em linguagem de ementa"),
+              consultas_alternativas: z
+                .array(z.string())
+                .max(5)
+                .optional()
+                .describe("Outras formulações da busca de jurisprudência, com sinônimos usados nas ementas"),
               termos_legislacao: z.string().optional().describe("Consulta curta para os dispositivos aplicáveis"),
               normas_provaveis: z.array(z.string()).optional().describe("Ex.: ['CDC, art. 14', 'CC, art. 186']"),
             }),
@@ -689,6 +794,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         lista.map(async (q) => {
           const termosJ = q.termos_jurisprudencia || q.questao;
           const termosL = q.termos_legislacao || q.questao;
+          const alternativas = q.consultas_alternativas?.length ? q.consultas_alternativas : undefined;
           const citacoes = (q.normas_provaveis ?? []).map((n) => interpretarCitacaoLegal(n)).filter((c): c is CitacaoLegal => c !== null);
           await Promise.all(citacoes.map((c) => garantirNorma(c, 8_000)));
           const citadas = citacoes
@@ -699,8 +805,8 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
             vetorLegislacao(termosL).then((vetor) =>
               pesquisarDispositivos(acervo, termosL, { normas: normasFiltro.length ? normasFiltro : undefined, limite: limite_por_questao, vetor }),
             ),
-            buscarJurisprudencia({ consulta: termosJ, autoridade_minima: "B", limite: limite_por_questao }, false),
-            buscarJurisprudencia({ consulta: termosJ, tribunais: alvo, limite: limite_por_questao }, !!alvo?.length),
+            buscarJurisprudencia({ consulta: termosJ, consultas_alternativas: alternativas, autoridade_minima: "B", limite: limite_por_questao }, false),
+            buscarJurisprudencia({ consulta: termosJ, consultas_alternativas: alternativas, tribunais: alvo, limite: limite_por_questao }, !!alvo?.length),
           ]);
           todasFontes.push(...local.fontes);
           const legislacao = [...citadas.map((d) => ({ ...d, origem: "citada" })), ...porAssunto.map((d) => ({ ...d, origem: "pesquisa" }))].filter(

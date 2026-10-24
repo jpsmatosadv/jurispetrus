@@ -45,7 +45,8 @@ test("busca híbrida acha documento sem palavra em comum com a consulta", async 
   assert.equal(a.contarVetores(), 3);
 
   const consulta = "negativação indevida";
-  assert.equal(pesquisar(a, { consulta }).resultados.length, 0, "sem vetores, a via lexical não acha nada");
+  assert.equal(pesquisar(a, { consulta, usar_sinonimos: false }).resultados.length, 0, "sem vetores nem sinônimos, a via lexical não acha nada");
+  assert.equal(pesquisar(a, { consulta }).resultados[0]?.id, "1", "os sinônimos (negativação = SPC/Serasa) acham pela via lexical");
   const [vetor] = await fake.vetorizar([consulta], "consulta");
   const r = pesquisar(a, { consulta }, { vetorConsulta: vetor });
   assert.equal(r.modo, "hibrido");

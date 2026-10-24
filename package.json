@@ -1,6 +1,6 @@
 {
   "name": "jurispetrus",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Servidor MCP de jurisprudência e legislação brasileira para Claude, com fontes oficiais verificáveis",
   "main": "dist/http.js",
   "scripts": {

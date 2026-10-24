@@ -80,6 +80,22 @@ Ficam de fora os portais que exigem captcha ou desafio anti-robô (e-SAJ do TJSP
 | D | Orientativo | Acórdãos de turmas e câmaras, jurisprudência selecionada do TCU |
 | E | Consulta | Temas sem tese firmada, decisões monocráticas, acórdãos do TCU |
 
+### Refinamento da pesquisa (sem API externa)
+
+- **Várias formulações:** `pesquisar_jurisprudencia` aceita `consultas_alternativas` (até 5). Cada formulação é pesquisada à
+  parte e a relevância textual é a média entre elas, então o julgado encontrado por várias sobe. Exemplo no acervo: para
+  "usucapião bem público", a Súmula 340/STF passa da 13ª para a 1ª posição com duas formulações alternativas.
+- **Sinônimos jurídicos:** `src/sinonimos.ts` traz cerca de 50 grupos de expressões equivalentes (negativação = inscrição
+  indevida = cadastro de inadimplentes; auxílio-doença = auxílio por incapacidade temporária etc.). As expressões entram
+  como `NEAR()` com radical, casando plurais e flexões. Desligue com `usar_sinonimos: false`.
+- **Triagem:** com `triagem: true` (e a questão em `contexto`), a pesquisa devolve até 30 candidatos. Com a chave da
+  Anthropic configurada, o servidor avalia a pertinência de cada um (alta, média, baixa, nenhuma), descarta os sem
+  pertinência e põe os pertinentes primeiro; sem a chave, devolve os candidatos resumidos para o Claude da conversa escolher.
+- **Duplicatas:** o mesmo julgado vindo de fontes diferentes (acervo, BNP, portal do tribunal) aparece uma vez, com as
+  demais cópias em `outras_fontes`. A chave combina o número (CNJ, ou tribunal + classe + número + órgão) e o início da ementa.
+- **Relevância mínima:** resultados abaixo de 20% da relevância do melhor são descartados (`relevancia_minima`, de 0 a 1;
+  5% na triagem), para que uma súmula que só compartilha uma palavra com a consulta não suba pela autoridade.
+
 ### Busca semântica
 
 Além das palavras (BM25), a pesquisa pode comparar o significado da pergunta com o dos julgados: "negativação indevida" encontra "apontamento no SPC sem notificação". Para ativar, escolha um provedor de embeddings e vetorize o acervo:
