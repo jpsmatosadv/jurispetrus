@@ -154,6 +154,41 @@ async function modoInstalacao(): Promise<void> {
   await server.connect(new StdioServerTransport());
 }
 
+/**
+ * Quem já tem a base no Mac recebe, ao atualizar o pacote, os documentos novos da base inicial
+ * (ex.: mais anos de acórdãos do STJ), sem perder o que já tem: julgados trazidos dos portais,
+ * análises guardadas e vetores. Roda uma vez por versão da base inicial.
+ */
+function incorporarBaseNova(db: import("node:sqlite").DatabaseSync, inicial: string): void {
+  if (!existsSync(inicial)) return;
+  const lerVersao = (esquema: string) =>
+    (db.prepare(`SELECT valor FROM ${esquema}.meta WHERE chave = ?`).get(esquema === "ini" ? "versao_base" : "versao_base_incorporada") as { valor: string } | undefined)?.valor;
+  db.exec(`ATTACH DATABASE '${inicial.replace(/'/g, "''")}' AS ini`);
+  try {
+    const nova = lerVersao("ini");
+    if (!nova || nova === lerVersao("main")) return;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (nova !== lerVersao("main")) {
+        const inicio = Date.now();
+        const colunas = (db.prepare("PRAGMA main.table_info(documentos)").all() as { name: string }[]).map((c) => c.name);
+        const lista = colunas.join(", ");
+        // os gatilhos da tabela atualizam o índice textual de cada documento inserido
+        const r = db.prepare(`INSERT INTO main.documentos (${lista}) SELECT ${lista} FROM ini.documentos WHERE id NOT IN (SELECT id FROM main.documentos)`).run();
+        db.exec("INSERT OR IGNORE INTO main.ingestoes SELECT * FROM ini.ingestoes");
+        db.prepare("INSERT INTO main.meta (chave, valor) VALUES ('versao_base_incorporada', ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor").run(nova);
+        registrar(`Base ${nova}: ${r.changes} documentos novos incorporados em ${Math.round((Date.now() - inicio) / 1000)} s`);
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      registrar(`Documentos novos da base não incorporados: ${(e as Error).message}`);
+    }
+  } finally {
+    db.exec("DETACH DATABASE ini");
+  }
+}
+
 async function iniciar(): Promise<void> {
   const { DatabaseSync } = await import("node:sqlite");
   const pasta = process.env.JURIS_DIR_DADOS?.trim() && !process.env.JURIS_DIR_DADOS.startsWith("${")
@@ -196,6 +231,7 @@ async function iniciar(): Promise<void> {
         throw e;
       }
     }
+    incorporarBaseNova(db, inicial);
     db.close();
   }
   process.env.JURIS_DB_PATH = base;

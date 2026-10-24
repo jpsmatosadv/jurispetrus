@@ -61,7 +61,7 @@ node --no-warnings -e "
   db.exec(\"VACUUM INTO '$PASTA/data/acervo-inicial.db'\");
   db.close();
   const c = new DatabaseSync('$PASTA/data/acervo-inicial.db');
-  c.exec(\"DELETE FROM analises; INSERT INTO documentos_fts(documentos_fts) VALUES('delete-all'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('delete-all'); INSERT OR REPLACE INTO meta (chave, valor) VALUES ('indice_textual_pendente', '1'); PRAGMA journal_mode = DELETE; VACUUM;\");
+  c.exec(\"DELETE FROM analises; INSERT INTO documentos_fts(documentos_fts) VALUES('delete-all'); INSERT INTO dispositivos_fts(dispositivos_fts) VALUES('delete-all'); INSERT OR REPLACE INTO meta (chave, valor) VALUES ('indice_textual_pendente', '1'); INSERT OR REPLACE INTO meta (chave, valor) VALUES ('versao_base', '$VERSAO-$(date +%Y%m%d)'); INSERT OR REPLACE INTO meta (chave, valor) VALUES ('versao_base_incorporada', '$VERSAO-$(date +%Y%m%d)'); PRAGMA journal_mode = DELETE; VACUUM;\");
   c.close();
 "
 

@@ -291,6 +291,8 @@ src/
 - Os portais que exigem captcha ou desafio anti-robô não são contornados. Para cobri-los, só com convênio ou API oficial.
 - No TJSP e no TJRJ, a pesquisa alcança só os processos do eproc; o acervo antigo do e-SAJ e do ejuris fica de fora.
 - No pacote do Mac, a base é atualizada sozinha uma vez por semana, em segundo plano (legislação, STF, STJ, TST e BNP).
+- Ao instalar uma versão nova do pacote por cima da antiga, os documentos novos da base inicial são incorporados à base
+  do Mac (em segundos), sem perder julgados trazidos dos portais, análises guardadas e vetores.
 - Espelhos de acórdãos de Turma do STJ anteriores aos últimos meses não estão no acervo (o volume passaria de 1 GB);
   por número, eles são alcançados pela consulta processual ao vivo.
 - A numeração do TJRS anterior ao CNJ (ex.: AC 70057637488) não é convertida: depende da consulta do próprio TJRS.
