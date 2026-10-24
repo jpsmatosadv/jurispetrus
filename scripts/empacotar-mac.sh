@@ -46,6 +46,9 @@ rm -rf "$PASTA/node_modules/sqlite-vec-linux-"* "$PASTA/node_modules/sqlite-vec-
 ORT="$PASTA/node_modules/onnxruntime-node/bin/napi-v6"
 [ -f "$ORT/darwin/arm64/onnxruntime_binding.node" ] || { echo "Faltou o onnxruntime para darwin/arm64"; exit 1; }
 find "$ORT" -mindepth 1 -maxdepth 1 ! -name darwin -exec rm -rf {} +
+# o binding carrega @rpath/libonnxruntime.1.dylib; a cópia com a versão completa no nome é redundante
+rm -f "$ORT/darwin/arm64/libonnxruntime."*.*.*.dylib
+[ -f "$ORT/darwin/arm64/libonnxruntime.1.dylib" ] || { echo "Faltou libonnxruntime.1.dylib"; exit 1; }
 
 echo "» modelo da busca semântica local"
 mkdir -p "$PASTA/modelos"

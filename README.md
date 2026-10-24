@@ -103,7 +103,10 @@ Além das palavras (BM25), a pesquisa pode comparar o significado da pergunta co
 **Local, sem API (padrão no pacote do Mac):** o modelo `granite-embedding-107m-multilingual` (IBM, Apache 2.0), quantizado
 em int8 (≈107 MB), roda no próprio computador pelo `onnxruntime-node`. No pacote, os vetores são gerados em segundo plano
 na primeira execução (alguns minutos para as cerca de 27 mil ementas e artigos) e, depois, para cada julgado novo trazido
-dos portais; o andamento aparece em `listar_fontes` (`busca_semantica`). Limites: o onnxruntime-node em uso só publica
+dos portais; o andamento aparece em `listar_fontes` (`busca_semantica`). A busca híbrida só liga quando 95% do acervo tem vetor
+(antes disso, os já vetorizados levariam vantagem indevida); até lá, a pesquisa segue por palavras e sinônimos.
+Numa avaliação com 11 consultas em linguagem leiga e o precedente esperado, o julgado certo ficou entre os 5 primeiros em
+5 consultas (2 só com palavras) e entre os 10 primeiros em 7 (4 só com palavras). Limites: o onnxruntime-node em uso só publica
 binário de macOS para Apple Silicon (no Mac Intel a busca segue por palavras), e o modelo é pequeno, então não substitui os
 sinônimos jurídicos (ex.: não aproxima "negativação" de "apontamento no SPC"; o dicionário de sinônimos cobre esse caso).
 

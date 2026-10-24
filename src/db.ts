@@ -181,6 +181,16 @@ export class Acervo {
     this.dimensoesVetor = dimensoes;
   }
 
+  /** Fração (0 a 1) de documentos e de dispositivos legais que já têm vetor. */
+  coberturaVetores(): { documentos: number; dispositivos: number } {
+    if (!this.temVetores) return { documentos: 0, dispositivos: 0 };
+    const fracao = (base: string, vec: string) => {
+      const r = this.db.prepare(`SELECT (SELECT COUNT(*) FROM ${base}) t, (SELECT COUNT(*) FROM ${vec}) v`).get() as { t: number; v: number };
+      return r.t ? Math.min(1, r.v / r.t) : 1;
+    };
+    return { documentos: fracao("documentos", "documentos_vec"), dispositivos: fracao("dispositivos", "dispositivos_vec") };
+  }
+
   /** Modelo com que o índice vetorial foi criado (ex.: 'local:granite-...:384'), se houver. */
   get modeloVetorial(): string | null {
     return this.temVetores ? this.lerMeta("vetor_modelo") : null;

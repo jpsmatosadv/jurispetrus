@@ -167,6 +167,7 @@ function filtrosSql(f: FiltrosPesquisa): { where: string[]; params: (string | nu
 }
 
 const CANDIDATOS = 300;
+const PESO_SEMANTICO = 0.55;
 
 /** Pesquisa textual de uma formulação; devolve a relevância normalizada (0 a 1) de cada candidato. */
 function viaLexical(acervo: Acervo, fts: string, filtros: ReturnType<typeof filtrosSql>, mapa: Map<number, Candidato>): Map<number, number> {
@@ -228,6 +229,8 @@ function resumoTexto(d: Documento): string {
 export interface OpcoesPesquisa {
   /** Vetor da consulta já calculado (busca semântica). Sem ele, a busca é só lexical. */
   vetorConsulta?: Float32Array | null;
+  /** Peso do significado na relevância da busca híbrida (o resto é das palavras). */
+  pesoSemantico?: number;
 }
 
 /**
@@ -275,7 +278,8 @@ export function pesquisar(
   const todos = [...mapa.values()]
     .filter((c) => f.incluir_cancelados || !SITUACOES_SUPERADAS.test(c.doc.situacao ?? ""))
     .map((c) => {
-      const relevancia = hibrido ? 0.45 * c.lexical + 0.55 * c.semantica : c.lexical;
+      const ps = opts.pesoSemantico ?? PESO_SEMANTICO;
+      const relevancia = hibrido ? (1 - ps) * c.lexical + ps * c.semantica : c.lexical;
       const autoridade = PESO_AUTORIDADE[c.doc.autoridade];
       const idade = idadeEmAnos(c.doc.data_julgamento);
       const atualidade = idade === null ? 0.3 : Math.exp(-idade / 8);

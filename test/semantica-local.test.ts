@@ -71,3 +71,28 @@ test("modelo local real: aproxima ementas pelo significado", { skip: !modeloLoca
   assert.equal(r.modo, "hibrido");
   assert.equal(r.resultados[0].id, "2", "acha sem palavra em comum");
 });
+
+test("busca híbrida só liga quando quase todo o acervo tem vetor", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  const { criarServidor } = await import("../src/server.js");
+  const a = new Acervo(":memory:");
+  if (!a.vetoresDisponiveis) return;
+  a.salvar(Array.from({ length: 10 }, (_, i) => doc(String(i), `Inscrição indevida em cadastro ${i}.`)));
+  const e = falso();
+  a.prepararVetores(e.id, e.dimensoes);
+  const consultar = async () => {
+    const server = criarServidor(a, { analista: null, fontes: [], embedder: e });
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    await server.connect(x);
+    const client = new Client({ name: "t", version: "1" });
+    await client.connect(y);
+    const r = await client.callTool({ name: "pesquisar_jurisprudencia", arguments: { consulta: "inscrição indevida" } });
+    return JSON.parse((r.content as { text: string }[])[0].text).modo;
+  };
+  const rowids = [...a.rowids(Array.from({ length: 10 }, (_, i) => String(i))).values()];
+  a.salvarVetores(rowids.slice(0, 3).map((rowid) => ({ rowid, vetor: normalizar(Float32Array.from([1, 1, 1])) })));
+  assert.equal(await consultar(), "lexical", "30% vetorizado: só palavras");
+  a.salvarVetores(rowids.map((rowid) => ({ rowid, vetor: normalizar(Float32Array.from([1, 1, 1])) })));
+  assert.equal(await consultar(), "hibrido");
+});

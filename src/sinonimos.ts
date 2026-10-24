@@ -8,7 +8,7 @@
  */
 export const GRUPOS_SINONIMOS: string[][] = [
   // Consumidor
-  ["negativacao", "inscricao indevida", "cadastro de inadimplentes", "cadastro restritivo de credito", "orgaos de protecao ao credito", "serasa"],
+  ["negativacao", "negativado", "negativada", "negativacoes", "inscricao indevida", "cadastro de inadimplentes", "cadastro restritivo de credito", "orgaos de protecao ao credito", "serasa"],
   ["dano moral presumido", "dano moral in re ipsa", "in re ipsa"],
   ["falha na prestacao do servico", "defeito na prestacao do servico", "fato do servico"],
   ["plano de saude", "operadora de plano de saude", "seguro saude", "saude suplementar"],
@@ -77,7 +77,7 @@ export function normalizar(texto: string): string {
     .trim();
 }
 
-const MAX_EXPANSOES = 8;
+const MAX_EXPANSOES = 10;
 
 /**
  * Expressões equivalentes às que aparecem na consulta (sem repetir as que já estão nela).

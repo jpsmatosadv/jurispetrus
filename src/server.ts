@@ -93,6 +93,8 @@ const importacoes = new Map<string, Promise<undefined>>();
 /** Consultas ao DataJud em andamento, para não repetir a mesma consulta lenta em paralelo. */
 const consultasDataJud = new Map<string, Promise<{ alias: string; processos: ProcessoDataJud[] }>>();
 const CACHE_DATAJUD_MS = 6 * 60 * 60 * 1000;
+/** Fração mínima do acervo com vetor para ligar a busca híbrida. */
+const COBERTURA_MINIMA_VETORES = 0.95;
 
 /** O que o SDK entrega ao handler além dos argumentos (só o que é usado aqui). */
 interface ExtraFerramenta {
@@ -114,10 +116,21 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     ]),
   ];
 
+  /**
+   * A busca híbrida só entra quando quase todo o acervo tem vetor: enquanto a vetorização em
+   * segundo plano está no começo, os documentos já vetorizados levariam vantagem indevida.
+   */
+  let cobertura = { documentos: 0, dispositivos: 0, em: 0 };
+  const coberturaSuficiente = (alvo: "documentos" | "dispositivos") => {
+    if (Date.now() - cobertura.em > 30_000) cobertura = { ...acervo.coberturaVetores(), em: Date.now() };
+    return cobertura[alvo] >= COBERTURA_MINIMA_VETORES;
+  };
+
   /** Vetor da consulta para a busca semântica; falha silenciosa cai na busca lexical. */
-  const vetorDaConsulta = async (consulta: string): Promise<Float32Array | null> => {
+  const vetorDaConsulta = async (consulta: string, alvo: "documentos" | "dispositivos" = "documentos"): Promise<Float32Array | null> => {
     // vetores de modelos diferentes não são comparáveis
     if (!opts.embedder || acervo.modeloVetorial !== opts.embedder.id) return null;
+    if (!coberturaSuficiente(alvo)) return null;
     try {
       return (await opts.embedder.vetorizar([consulta], "consulta"))[0];
     } catch (e) {
@@ -610,7 +623,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     };
   };
 
-  const vetorLegislacao = async (consulta: string) => (acervo.temVetoresLegislacao ? vetorDaConsulta(consulta) : null);
+  const vetorLegislacao = async (consulta: string) => (acervo.temVetoresLegislacao ? vetorDaConsulta(consulta, "dispositivos") : null);
 
   server.registerTool(
     "buscar_legislacao",
