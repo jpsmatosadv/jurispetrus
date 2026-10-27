@@ -18,7 +18,10 @@ import { normalizar, type Embedder, type TipoTexto } from "./embeddings.js";
 export const MODELO_LOCAL = "granite-embedding-107m-multilingual";
 export const ID_EMBEDDER_LOCAL = `local:${MODELO_LOCAL}:384`;
 const MAX_TOKENS = 512;
-const LOTE = 16;
+/** Textos por inferência: lotes pequenos limitam o pico de memória (atenção cresce com lote × tokens²). */
+const LOTE = 4;
+/** Sem uso por este tempo, o modelo sai da memória (volta em ~3 s na próxima consulta). */
+const OCIOSO_MS = 3 * 60 * 1000;
 
 /** Pasta do modelo: JURIS_MODELO_LOCAL ou modelos/ ao lado de dist/ (ou de server/, no pacote). */
 export function pastaModeloLocal(): string {
@@ -34,6 +37,11 @@ export function modeloLocalPresente(pasta = pastaModeloLocal()): boolean {
 type Sessao = import("onnxruntime-node").InferenceSession;
 type Ort = typeof import("onnxruntime-node");
 type Tokenizador = import("@huggingface/tokenizers").Tokenizer;
+
+/** Coleta de lixo explícita, quando o Node foi iniciado com --expose-gc (o pacote do Mac inicia assim). */
+function coletarLixo(): void {
+  (globalThis as { gc?: () => void }).gc?.();
+}
 
 export class LocalEmbedder implements Embedder {
   readonly id = ID_EMBEDDER_LOCAL;
@@ -57,6 +65,11 @@ export class LocalEmbedder implements Embedder {
         graphOptimizationLevel: "all",
         // deixa núcleos livres para o Claude e o sistema enquanto vetoriza em segundo plano
         intraOpNumThreads: Math.max(1, Math.floor(availableParallelism() / 2)),
+        interOpNumThreads: 1,
+        executionMode: "sequential",
+        // sem a reserva (arena) do onnxruntime, a memória do pico volta ao sistema após cada lote
+        enableCpuMemArena: false,
+        enableMemPattern: false,
       });
       return { ort, sessao, tok };
     })();
@@ -76,7 +89,41 @@ export class LocalEmbedder implements Embedder {
   vetorizar(textos: string[], _tipo: TipoTexto): Promise<Float32Array[]> {
     const tarefa = this.fila.then(() => this.executar(textos));
     this.fila = tarefa.catch(() => {});
+    tarefa
+      .finally(() => {
+        // lotes da vetorização deixam muitos vetores temporários: devolve a memória logo
+        if (textos.length > 1) coletarLixo();
+        this.agendarDescarga();
+      })
+      .catch(() => {});
     return tarefa;
+  }
+
+  private ocioso: NodeJS.Timeout | null = null;
+
+  /** Descarrega o modelo depois de um tempo sem uso (as várias cópias do servidor não o seguram). */
+  private agendarDescarga(): void {
+    if (this.ocioso) clearTimeout(this.ocioso);
+    this.ocioso = setTimeout(() => void this.descarregar(), OCIOSO_MS);
+    this.ocioso.unref?.();
+  }
+
+  /** Libera o modelo da memória; a próxima consulta o carrega de novo. */
+  async descarregar(): Promise<void> {
+    const carregado = this.carregando;
+    if (!carregado) return;
+    await this.fila; // espera a inferência em curso
+    if (this.carregando !== carregado) return;
+    let sessao: Sessao;
+    try {
+      sessao = (await carregado).sessao;
+    } catch {
+      return; // a falha de carga é permanente e fica guardada (ex.: Mac Intel)
+    }
+    this.carregando = null;
+    await sessao.release().catch(() => {});
+    // depois de sair desta função, nada mais segura o tokenizador (vocabulário de ~170 MB)
+    setTimeout(coletarLixo, 100).unref?.();
   }
 
   private async executar(textos: string[]): Promise<Float32Array[]> {

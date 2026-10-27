@@ -116,7 +116,8 @@ if (sistema) {
   // Um Node 22.13+ instalado no Mac dá todos os recursos (inclusive a busca semântica).
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  reiniciar(sistema, ["--no-warnings"], "node do sistema", env);
+  // --expose-gc: a busca semântica devolve a memória ao sistema após vetorizar e ao descarregar o modelo
+  reiniciar(sistema, ["--no-warnings", "--expose-gc"], "node do sistema", env);
 } else if (sqlite === "ausente") {
   registrar(`Node ${process.version} sem SQLite com FTS5 e nenhum Node 22.13+ encontrado no Mac: modo de instalação.`);
   await modoInstalacao();
@@ -139,7 +140,7 @@ async function modoInstalacao(): Promise<void> {
     "1. Baixe e instale o Node.js LTS em https://nodejs.org (instalador para macOS).\n" +
     "2. Feche o Claude Desktop por completo (Cmd+Q) e abra de novo.\n" +
     "A extensão encontra o Node.js instalado sozinha; não é preciso mudar nenhuma configuração.";
-  const server = new McpServer({ name: "jurispetrus", version: "0.3.0" }, { instructions: orientacao });
+  const server = new McpServer({ name: "jurispetrus", version: "0.3.1" }, { instructions: orientacao });
   server.registerTool(
     "jurispetrus_instalacao",
     {

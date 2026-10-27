@@ -291,6 +291,9 @@ src/
 - Os portais que exigem captcha ou desafio anti-robô não são contornados. Para cobri-los, só com convênio ou API oficial.
 - No TJSP e no TJRJ, a pesquisa alcança só os processos do eproc; o acervo antigo do e-SAJ e do ejuris fica de fora.
 - No pacote do Mac, a base é atualizada sozinha uma vez por semana, em segundo plano (legislação, STF, STJ, TST e BNP).
+- Memória: sem a busca semântica, cada cópia do servidor usa ~85 MB. O modelo local ocupa ~430 MB enquanto está
+  carregado e sai da memória 3 minutos depois do último uso; a vetorização em segundo plano chega a ~650 MB enquanto
+  roda. O Claude Desktop pode abrir mais de uma cópia do servidor (chat, Cowork, Claude Code).
 - Ao instalar uma versão nova do pacote por cima da antiga, os documentos novos da base inicial são incorporados à base
   do Mac (em segundos), sem perder julgados trazidos dos portais, análises guardadas e vetores.
 - Espelhos de acórdãos de Turma do STJ anteriores aos últimos meses não estão no acervo (o volume passaria de 1 GB);
