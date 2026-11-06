@@ -147,14 +147,14 @@ interface RecursoCkan {
   format: string;
 }
 
-async function recursos(pacote: string): Promise<RecursoCkan[]> {
+export async function recursos(pacote: string): Promise<RecursoCkan[]> {
   const r = await fetch(`${CKAN}/package_show?id=${encodeURIComponent(pacote)}`, { signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new Error(`CKAN ${pacote}: HTTP ${r.status}`);
   const json = (await r.json()) as { result: { resources: RecursoCkan[] } };
   return json.result.resources;
 }
 
-async function baixar(url: string): Promise<string> {
+export async function baixar(url: string): Promise<string> {
   const r = await fetch(url, { signal: AbortSignal.timeout(300_000) });
   if (!r.ok) throw new Error(`Download ${url}: HTTP ${r.status}`);
   return r.text();

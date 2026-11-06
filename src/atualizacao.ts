@@ -9,10 +9,13 @@ import { ingerirEspelhos, ingerirTemas } from "./ingest/stj.js";
 import { ingerirEnunciadosTst } from "./ingest/tst.js";
 import { ingerirBnp } from "./ingest/bnp.js";
 import { ingerirControleConcentradoStf } from "./ingest/stf-api.js";
+import { ingerirIndiceTurmasStj } from "./ingest/stj-indice.js";
 import { vetorizarPendentes } from "./vetorizar.js";
 
-export const ETAPAS = ["legislacao", "stf", "stj", "tst", "bnp", "vetorizar"] as const;
+export const ETAPAS = ["legislacao", "stf", "stj", "tst", "bnp", "vetorizar", "stj_turmas_historico"] as const;
 export type Etapa = (typeof ETAPAS)[number];
+/** Etapas de "atualize o acervo" sem etapa indicada; o histórico das Turmas (horas de download) só quando pedido. */
+export const ETAPAS_PADRAO: Etapa[] = ["legislacao", "stf", "stj", "tst", "bnp", "vetorizar"];
 
 export interface EstadoAtualizacao {
   em_andamento: boolean;
@@ -51,6 +54,7 @@ export function iniciarAtualizacao(
           await ingerirEspelhos(acervo, { meses: 2, log });
         }
         if (etapa === "tst") await ingerirEnunciadosTst(acervo, log);
+        if (etapa === "stj_turmas_historico") await ingerirIndiceTurmasStj(acervo, { log });
         if (etapa === "bnp") await ingerirBnp(acervo, { log });
         if (etapa === "vetorizar" && embedder) {
           acervo.prepararVetores(embedder.id, embedder.dimensoes);
@@ -72,7 +76,8 @@ const SEMANA_MS = 7 * 86_400_000;
 
 /**
  * Atualização automática semanal (pacote do Mac): se a última passou de 7 dias, atualiza em
- * segundo plano legislação, STF (controle concentrado), STJ, TST e BNP. A trava entre processos
+ * segundo plano legislação, STF (controle concentrado), STJ (com o índice das Turmas), TST e BNP;
+ * sem o índice das Turmas, ele é baixado logo. A trava entre processos
  * evita que as várias cópias do servidor abertas pelo Claude Desktop atualizem ao mesmo tempo.
  */
 export function agendarAtualizacaoAutomatica(
@@ -80,11 +85,16 @@ export function agendarAtualizacaoAutomatica(
   opts: { trava: (nome: string) => (() => void) | null; aoTerminar?: () => void; intervaloMs?: number },
 ): boolean {
   const ultima = acervo.lerMeta("atualizacao_automatica_em") ?? acervo.coberturaAcervo([]).atualizado_em;
-  if (ultima && Date.now() - Date.parse(ultima) < (opts.intervaloMs ?? SEMANA_MS)) return false;
+  const semanaVencida = !ultima || Date.now() - Date.parse(ultima) >= (opts.intervaloMs ?? SEMANA_MS);
+  // o índice das Turmas do STJ (única fonte aberta para conferir REsp/AREsp/HC das Turmas, desde que a
+  // consulta processual passou a exigir CAPTCHA) é baixado já na primeira execução
+  const semIndiceStj = !(acervo.db.prepare("SELECT 1 FROM processos_stj LIMIT 1").get());
+  if (!semanaVencida && !semIndiceStj) return false;
   const liberar = opts.trava("atualizando");
   if (!liberar) return false;
-  acervo.gravarMeta("atualizacao_automatica_em", new Date().toISOString());
-  iniciarAtualizacao(acervo, ["legislacao", "stf", "stj", "tst", "bnp"], null, () => {
+  const etapas: Etapa[] = semanaVencida ? ["legislacao", "stf", "stj", "tst", "bnp", "stj_turmas_historico"] : ["stj_turmas_historico"];
+  if (semanaVencida) acervo.gravarMeta("atualizacao_automatica_em", new Date().toISOString());
+  iniciarAtualizacao(acervo, etapas, null, () => {
     liberar();
     opts.aoTerminar?.();
   });

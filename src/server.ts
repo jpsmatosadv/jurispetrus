@@ -28,7 +28,7 @@ import {
 import { CATALOGO, normaPorNumero, resolverNorma, type NormaCatalogo } from "./legislacao/catalogo.js";
 import { historicoLegislativo, type HistoricoLegislativo } from "./historico.js";
 import { importarNorma } from "./legislacao/importar.js";
-import { ETAPAS, estadoAtualizacao, iniciarAtualizacao, type Etapa } from "./atualizacao.js";
+import { ETAPAS, ETAPAS_PADRAO, estadoAtualizacao, iniciarAtualizacao, type Etapa } from "./atualizacao.js";
 
 export const INSTRUCOES = `JurisPetrus: pesquisa de jurisprudência e legislação brasileiras com fonte oficial verificável.
 
@@ -1135,18 +1135,25 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         pesquisa_ao_vivo: (opts.fontes ?? []).map((f) => ({ fonte: f.nome, tribunais: f.tribunais, consultada_por_padrao: f.padrao })),
         outras_consultas: [
           "STF por classe e número (localizar_julgado, verificar_citacao): portal de processos e pesquisa de jurisprudência, todo o acervo do tribunal",
-          "STJ por classe e número (localizar_julgado, verificar_citacao): consulta processual, todo o acervo do tribunal, com acórdãos e monocráticas",
+          "STJ por classe e número (localizar_julgado, verificar_citacao): acervo local (espelhos dos Dados Abertos, Corte Especial e Seções desde 2022) e índice das Turmas desde 2022 (etapa stj_turmas_historico)",
           "DataJud/CNJ (metadados e movimentações processuais)",
           "Catálogo de legislação do Senado",
         ],
         nao_conectados: {
-          "STJ — pesquisa de jurisprudência por tema (SCON)": "exige reCAPTCHA; por tema, o STJ vem do acervo local (espelhos) e, por número, da consulta processual",
+          "STJ — pesquisa de jurisprudência por tema (SCON)": "exige reCAPTCHA; por tema, o STJ vem do acervo local (espelhos)",
+          "STJ — consulta processual ao vivo": "desde nov/2026 migrou para consulta-processo.web.stj.jus.br, que exige CAPTCHA; acórdãos anteriores a mai/2022 e decisões monocráticas do STJ não são conferidos automaticamente",
           "TJMG, TJGO, e-SAJ do TJSP e do TJCE": "exigem captcha",
           TRF6: "bloqueio anti-robô",
           "TJRS, TJMS, TJAM, TJPE, TRF1, TRF3": "portais sem resposta nos testes (podem responder a partir do Brasil)",
           "TJRS — numeração anterior ao CNJ": "a conversão para o número CNJ depende da consulta do próprio TJRS",
         },
         cobertura_acervo: acervo.coberturaAcervo(["STF", "STJ"]),
+        indice_turmas_stj: (() => {
+          const r = acervo.db.prepare("SELECT COUNT(*) n, MIN(data_julgamento) de, MAX(data_julgamento) ate FROM processos_stj").get() as { n: number; de: string | null; ate: string | null };
+          return r.n
+            ? { acordaos: r.n, julgados_de: r.de, julgados_ate: r.ate }
+            : "não baixado (peça 'atualize o acervo com a etapa stj_turmas_historico' para conferir REsp/AREsp/HC antigos sem o portal)";
+        })(),
         atualizacao: opts.permitirAtualizacao ? estadoAtualizacao() : undefined,
       }),
     ),
@@ -1158,20 +1165,23 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       {
         title: "Atualizar a base local",
         description:
-          "Atualiza em segundo plano a base instalada neste computador: legislação consolidada, STJ (temas e acórdãos dos " +
-          "últimos meses), enunciados do TST e Banco Nacional de Precedentes do CNJ; com chave da Voyage, também a busca " +
-          "semântica. Use quando o usuário pedir para atualizar a base. A resposta volta na hora; o andamento aparece em listar_fontes.",
+          "Atualiza em segundo plano a base instalada neste computador: legislação consolidada, STF (controle concentrado), " +
+          "STJ (temas e acórdãos dos últimos meses), enunciados do TST, Banco Nacional de Precedentes do CNJ e vetores da busca " +
+          "semântica. Use quando o usuário pedir para atualizar a base. A etapa 'stj_turmas_historico' (só quando pedida) baixa " +
+          "dos Dados Abertos do STJ o índice dos acórdãos das Turmas desde 2022, para conferir citações de REsp, AREsp, HC etc. " +
+          "pelo número quando o portal do STJ recusa o acesso; leva algumas horas e ocupa algumas centenas de MB. " +
+          "A resposta volta na hora; o andamento aparece em listar_fontes.",
         inputSchema: {
           etapas: z
             .array(z.enum(ETAPAS))
             .optional()
-            .describe("Padrão: todas. 'bnp' é a mais demorada (cerca de 15 min)."),
+            .describe("Padrão: todas menos 'stj_turmas_historico'. 'bnp' leva cerca de 15 min; 'stj_turmas_historico', horas."),
         },
         annotations: { readOnlyHint: false, openWorldHint: true },
       },
       protegido("atualizar_acervo", ({ etapas }) =>
         ok({
-          ...iniciarAtualizacao(acervo, (etapas?.length ? etapas : [...ETAPAS]) as Etapa[], opts.embedder),
+          ...iniciarAtualizacao(acervo, (etapas?.length ? etapas : ETAPAS_PADRAO) as Etapa[], opts.embedder),
           orientacao: "A atualização roda em segundo plano; a base continua disponível. Consulte o andamento com listar_fontes.",
         }),
       ),

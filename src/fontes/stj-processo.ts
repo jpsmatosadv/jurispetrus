@@ -27,6 +27,8 @@ export class AcessoRecusado extends Error {
   constructor(
     readonly status: number,
     detalhe = `HTTP ${status}`,
+    /** A fonte deixou de aceitar acesso automatizado (não adianta tentar de novo em minutos). */
+    readonly duradouro = false,
   ) {
     super(`o portal do STJ recusou o acesso (${detalhe})`);
   }
@@ -128,6 +130,11 @@ export async function consultarProcessoStj(classe: string, numero: string, o: Op
   // Só "Nenhum registro encontrado" prova que o processo não existe; outra página sem os dados
   // do processo (verificação anti-robô, manutenção) é recusa de acesso, não inexistência.
   if (/Nenhum registro encontrado/i.test(pagina)) return p;
+  // Desde nov/2026 a consulta antiga só mostra "Aplicação atualizada" e aponta para
+  // consulta-processo.web.stj.jus.br, que exige CAPTCHA: não há mais consulta automatizada.
+  if (/Aplica(?:ç|&ccedil;)(?:ã|&atilde;)o atualizada|consulta-processo\.web\.stj\.jus\.br/i.test(pagina)) {
+    throw new AcessoRecusado(r.status, "a consulta processual do STJ migrou para consulta-processo.web.stj.jus.br, que exige CAPTCHA", true);
+  }
   if (!/classSpanDetalhesLabel/.test(pagina)) throw new AcessoRecusado(r.status, "o portal devolveu uma página sem os dados do processo");
 
   const campos = new Map<string, string>();

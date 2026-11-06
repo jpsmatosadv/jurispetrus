@@ -48,7 +48,7 @@ Para a interpretação histórica e teleológica, `historico_legislativo` recons
 | Tribunal | Fontes | O que traz |
 |---|---|---|
 | STF | Portal de processos (`portal.stf.jus.br/processos`) e API da pesquisa de jurisprudência | Relator, redator do acórdão, relator do último incidente, número único, trânsito em julgado; cada acórdão e decisão monocrática com incidente (AgR, ED, MC, Ref...), datas de julgamento e publicação, período da sessão virtual, ementa e inteiro teor |
-| STJ | Consulta processual (`processo.stj.jus.br/processo/pesquisa`) | Relator, órgão, número único, registro, trânsito em julgado; cada acórdão com a forma completa ("AgRg no HC ..."), datas de julgamento e publicação, relator e redator, ementa (do PDF "EMENTA / ACÓRDÃO") e cada decisão monocrática |
+| STJ | Consulta processual (`processo.stj.jus.br/processo/pesquisa`) — **desativada pelo STJ em nov/2026** (a nova exige CAPTCHA); hoje vale o acervo local e o índice das Turmas | Relator, órgão, número único, registro, trânsito em julgado; cada acórdão com a forma completa ("AgRg no HC ..."), datas de julgamento e publicação, relator e redator, ementa (do PDF "EMENTA / ACÓRDÃO") e cada decisão monocrática |
 
 Cobre todo o acervo dos dois tribunais, inclusive processos antigos (ex.: REsp 889.766, de 2007). A consulta fica
 guardada por 24 horas. A pesquisa de jurisprudência do STJ por tema (SCON) exige reCAPTCHA e não é usada.
@@ -291,7 +291,15 @@ src/
 - Os portais que exigem captcha ou desafio anti-robô não são contornados. Para cobri-los, só com convênio ou API oficial.
 - No TJSP e no TJRJ, a pesquisa alcança só os processos do eproc; o acervo antigo do e-SAJ e do ejuris fica de fora.
 - No pacote do Mac, a base é atualizada sozinha uma vez por semana, em segundo plano (legislação, STF, STJ, TST e BNP).
-- Portal do STJ: a consulta processual fica atrás de uma proteção anti-robô que às vezes recusa o acesso (HTTP 403).
+- Índice das Turmas do STJ: ~162 mil acórdãos das seis Turmas publicados desde maio de 2022 (classe, número, órgão,
+  relator, datas, início da ementa), ~170 MB, baixado dos Dados Abertos em segundo plano na primeira execução do pacote
+  e completado toda semana. Fica fora da pesquisa por tema e da busca semântica.
+- STJ ao vivo: em novembro de 2026 a consulta processual do STJ migrou para `consulta-processo.web.stj.jus.br`, que
+  exige CAPTCHA; a consulta antiga só mostra o aviso de mudança. O JurisPetrus reconhece o aviso, pausa as tentativas
+  por 24 horas e confere o STJ pelo acervo local e pelo índice das Turmas (etapa `stj_turmas_historico` de
+  `atualizar_acervo`, baixada dos Dados Abertos sob demanda). Acórdãos anteriores a maio de 2022 e decisões
+  monocráticas do STJ não têm fonte aberta e ficam sem conferência automática.
+- Portal do STJ (antes da migração): a consulta processual fica atrás de uma proteção anti-robô que às vezes recusa o acesso (HTTP 403).
   O JurisPetrus espaça os acessos (1,5 s), não baixa PDFs na conferência de citação, guarda por 90 dias a consulta
   de processo transitado em julgado e, depois de uma recusa, pausa as consultas ao portal por 20 minutos (em todas as
   cópias do servidor). Enquanto isso, confere no acervo local (`conferido_em: "acervo_local"`) e, sem o julgado lá,

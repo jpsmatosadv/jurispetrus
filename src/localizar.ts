@@ -180,7 +180,7 @@ async function consultar(
   const nome = tribunal === "STF" ? "STF — portal de processos e pesquisa de jurisprudência" : "STJ — consulta processual";
   const pausaAte = acervo?.lerMeta(`pausa_portal_${tribunal}`);
   if (pausaAte && Date.parse(pausaAte) > Date.now()) {
-    return { p: null, fonte: { fonte: nome, status: "pausado", erro: `o portal recusou acesso há pouco; nova tentativa após ${pausaAte.slice(11, 16)} (UTC)`, ms: 0 } };
+    return { p: null, fonte: { fonte: nome, status: "pausado", erro: `o portal recusou acesso; nova tentativa após ${pausaAte.slice(0, 16).replace("T", " ")} (UTC)`, ms: 0 } };
   }
   const inicio = Date.now();
   const controle = new AbortController();
@@ -195,7 +195,8 @@ async function consultar(
   } catch (e) {
     if (e instanceof AcessoRecusado) {
       // pausa compartilhada pela base: as outras cópias do servidor também esperam
-      acervo?.gravarMeta(`pausa_portal_${tribunal}`, new Date(Date.now() + PAUSA_MS).toISOString());
+      // recusa duradoura (portal passou a exigir CAPTCHA): só tenta de novo no dia seguinte
+      acervo?.gravarMeta(`pausa_portal_${tribunal}`, new Date(Date.now() + (e.duradouro ? 24 * 60 * 60 * 1000 : PAUSA_MS)).toISOString());
       return { p: null, fonte: { fonte: nome, status: "acesso_recusado", erro: (e as Error).message, ms: Date.now() - inicio } };
     }
     const tempo = controle.signal.aborted;
@@ -211,9 +212,18 @@ async function consultar(
  */
 export function processoNoAcervo(acervo: Acervo, tribunal: "STF" | "STJ", c: ProcessoCitado): ProcessoLocalizado | null {
   const classe = classeNoTribunal(c.classe, tribunal);
-  const docs = (acervo.db
+  const doAcervo = acervo.db
     .prepare("SELECT * FROM documentos WHERE tribunal = ? AND (numero = ? OR numero LIKE ?)")
-    .all(tribunal, c.numero, `${c.numero} %`) as unknown as Documento[]).filter((d) => {
+    .all(tribunal, c.numero, `${c.numero} %`) as unknown as Documento[];
+  // índice leve das Turmas do STJ (baixado sob demanda): mesmos campos de conferência
+  const ids = new Set(doAcervo.map((d) => d.id));
+  const doIndice =
+    tribunal === "STJ"
+      ? (acervo.db.prepare("SELECT * FROM processos_stj WHERE numero = ?").all(c.numero) as any[])
+          .filter((r) => !ids.has(r.id))
+          .map((r) => ({ ...r, tribunal: "STJ", tipo: "acordao", tese: null, fonte: "stj-indice-turmas" }) as unknown as Documento)
+      : [];
+  const docs = [...doAcervo, ...doIndice].filter((d) => {
     const p = interpretarProcesso(`${d.classe ?? ""} ${d.numero}`);
     return p && classeNoTribunal(p.classe, tribunal) === classe && p.numero === c.numero;
   });

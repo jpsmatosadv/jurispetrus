@@ -102,6 +102,20 @@ CREATE TABLE IF NOT EXISTS analises (
   PRIMARY KEY (doc_id, tipo)
 );
 
+-- Índice leve de acórdãos das Turmas do STJ (Dados Abertos), só para conferir citações pelo número:
+-- fica fora da pesquisa textual e da busca semântica.
+CREATE TABLE IF NOT EXISTS processos_stj (
+  id TEXT PRIMARY KEY,
+  classe TEXT,
+  numero TEXT NOT NULL,
+  orgao TEXT,
+  relator TEXT,
+  data_julgamento TEXT,
+  data_publicacao TEXT,
+  ementa TEXT,
+  fonte_url TEXT
+);
+CREATE INDEX IF NOT EXISTS processos_stj_numero ON processos_stj(numero);
 CREATE TABLE IF NOT EXISTS ingestoes (
   fonte TEXT NOT NULL,
   recurso TEXT NOT NULL,
@@ -345,6 +359,27 @@ export class Acervo {
 
   obter(id: string): Documento | undefined {
     return this.db.prepare("SELECT * FROM documentos WHERE id = ?").get(id) as Documento | undefined;
+  }
+
+  /** Grava no índice leve de processos do STJ (ver tabela processos_stj). */
+  salvarIndiceStj(
+    linhas: { id: string; classe: string | null; numero: string; orgao: string | null; relator: string | null; data_julgamento: string | null; data_publicacao: string | null; ementa: string | null; fonte_url: string | null }[],
+  ): void {
+    if (!linhas.length) return;
+    const stmt = this.db.prepare(
+      `INSERT INTO processos_stj (id, classe, numero, orgao, relator, data_julgamento, data_publicacao, ementa, fonte_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET classe = excluded.classe, numero = excluded.numero,
+       orgao = excluded.orgao, relator = excluded.relator, data_julgamento = excluded.data_julgamento,
+       data_publicacao = excluded.data_publicacao, ementa = excluded.ementa, fonte_url = excluded.fonte_url`,
+    );
+    this.db.exec("BEGIN");
+    try {
+      for (const l of linhas) stmt.run(l.id, l.classe, l.numero, l.orgao, l.relator, l.data_julgamento, l.data_publicacao, l.ementa, l.fonte_url);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   registrarIngestao(fonte: string, recurso: string, documentos: number): void {

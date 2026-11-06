@@ -157,3 +157,34 @@ test("STJ: página sem os dados do processo é recusa, não inexistência", asyn
   assert.equal(r.status, "INDISPONIVEL");
   assert.equal(r.fontes_consultadas[0].status, "acesso_recusado");
 });
+
+test("índice das Turmas do STJ: confere pelo número quando o portal recusa", async () => {
+  process.env.JURIS_STJ_INTERVALO_MS = "0";
+  const { Acervo } = await import("../src/db.js");
+  const a = new Acervo(":memory:");
+  a.salvarIndiceStj([
+    { id: "STJ-ACOR-9", classe: "REsp", numero: "1864620", orgao: "TERCEIRA TURMA", relator: "NANCY ANDRIGHI", data_julgamento: "2020-08-25", data_publicacao: "2020-08-31", ementa: "RECURSO ESPECIAL. AÇÃO DE COBRANÇA.", fonte_url: null },
+    { id: "STJ-ACOR-10", classe: "AgInt no REsp", numero: "1864620", orgao: "TERCEIRA TURMA", relator: "NANCY ANDRIGHI", data_julgamento: "2020-11-10", data_publicacao: null, ementa: "AGRAVO INTERNO.", fonte_url: null },
+  ]);
+  const recusa = (async () => new Response("", { status: 403 })) as unknown as typeof fetch;
+  const r = await localizarJulgado(a, "REsp 1.864.620/SP", { relator: "Nancy Andrighi", data: "25/08/2020", fetchImpl: recusa });
+  assert.equal(r.status, "CONFIRMADO");
+  assert.equal(r.conferido_em, "acervo_local");
+  assert.equal(r.julgado_citado?.forma, "REsp 1864620");
+  assert.equal(r.processos[0].julgados.length, 2);
+  assert.equal(r.divergencias.length, 0);
+});
+
+test("atualização automática: baixa o índice das Turmas do STJ se ainda não existe", async () => {
+  const { Acervo } = await import("../src/db.js");
+  const { agendarAtualizacaoAutomatica } = await import("../src/atualizacao.js");
+  const a = new Acervo(":memory:");
+  a.gravarMeta("atualizacao_automatica_em", new Date().toISOString()); // semana em dia
+  let pedidos = 0;
+  const trava = () => { pedidos++; return null; }; // não deixa iniciar de fato
+  agendarAtualizacaoAutomatica(a, { trava });
+  assert.equal(pedidos, 1, "sem índice: quer atualizar mesmo com a semana em dia");
+  a.salvarIndiceStj([{ id: "x", classe: "REsp", numero: "1", orgao: null, relator: null, data_julgamento: null, data_publicacao: null, ementa: null, fonte_url: null }]);
+  assert.equal(agendarAtualizacaoAutomatica(a, { trava }), false);
+  assert.equal(pedidos, 1, "com índice e semana em dia: nada a fazer");
+});

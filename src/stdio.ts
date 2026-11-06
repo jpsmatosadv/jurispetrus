@@ -35,10 +35,10 @@ if (process.env.JURIS_ATUALIZACAO_AUTOMATICA === "1") {
   setTimeout(() => {
     try {
       if (agendarAtualizacaoAutomatica(acervo, { trava: (nome) => travar(`${config.dbPath}.${nome}`), aoTerminar: vetorizarFundo })) {
-        console.error("Atualização semanal do acervo iniciada em segundo plano");
+        console.error("Atualização do acervo iniciada em segundo plano");
       }
     } catch (e) {
       console.error(`Atualização automática não iniciada: ${(e as Error).message}`);
     }
-  }, 60_000).unref?.();
+  }, 30_000).unref?.();
 }
