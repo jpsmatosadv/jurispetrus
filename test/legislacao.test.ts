@@ -126,3 +126,13 @@ test("normaPorNumero identifica leis fora do catálogo", () => {
   assert.equal(normaPorNumero("Decreto-Lei 911/69")?.sigla, "DEL-911-1969");
   assert.equal(normaPorNumero("Lei 8.078/90")?.sigla, "CDC");
 });
+
+test("publicação original da Câmara (formato antigo com <BR> e <CENTER>) vira artigos", async () => {
+  const { paragrafosDoTextoAntigo, lerNormaAtualizadaCamara } = await import("../src/legislacao/fontes.js");
+  const html = `<div class="texto"><STRONG>O PRESIDENTE DA REPÚBLICA</STRONG><BR>Faço saber que o Congresso Nacional decreta e eu sanciono a seguinte Lei: <BR><BR>
+<CENTER>CAPÍTULO I <BR>DISPOSIÇÕES GERAIS<STRONG> </STRONG></CENTER><BR><BR>
+<CENTER><B>Seção I </CENTER></B><CENTER><B>Do Objeto </CENTER></B><BR><BR>&nbsp;&nbsp;Art. 1º&nbsp;Pelo contrato de seguro, a seguradora obriga-se. <BR><BR>&nbsp;Art. 2º&nbsp;Somente podem pactuar entidades autorizadas. <BR><BR>&nbsp;Art. 3º&nbsp;Cessão sem anuência. <BR><BR>Brasília, 9 de dezembro de 2024</div>`;
+  const ds = lerNormaAtualizadaCamara(paragrafosDoTextoAntigo(html), "https://exemplo");
+  assert.deepEqual(ds.map((d) => d.artigo), ["1", "2", "3"]);
+  assert.match(ds[1].caminho ?? "", /CAPÍTULO I - DISPOSIÇÕES GERAIS > Seção I - Do Objeto/);
+});

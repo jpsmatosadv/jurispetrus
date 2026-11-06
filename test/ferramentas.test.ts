@@ -152,3 +152,47 @@ test("DataJud lento: o erro de prazo explica a demora", async () => {
   );
   clearTimeout(vivo);
 });
+
+test("buscar_legislacao: citação exata fora do índice não devolve artigo de outra lei", async () => {
+  const a = acervoBase(); // tem o CDC, art. 14
+  const semRede = (async () => new Response("", { status: 404 })) as unknown as typeof fetch;
+  const server = criarServidor(a, { analista: null, fontes: [], fetchImpl: semRede });
+  const [x, y] = InMemoryTransport.createLinkedPair();
+  await server.connect(x);
+  const client = new Client({ name: "teste", version: "1" });
+  await client.connect(y);
+  const call = async (name: string, args: Record<string, unknown>) =>
+    JSON.parse(((await client.callTool({ name, arguments: args })).content as { text: string }[])[0].text);
+  const r = await call("buscar_legislacao", { consulta: "art. 14 da Lei 15.040/2024" });
+  assert.equal(r.estado, "NAO_INDEXADO");
+  assert.equal(r.resultados, undefined, "nada de art. 14 do CDC no lugar");
+  const outro = await call("buscar_legislacao", { consulta: "art. 999 do CDC" });
+  assert.equal(outro.estado, "ARTIGO_NAO_ENCONTRADO");
+  const v = await call("verificar_citacao", { citacao: "art. 14 da Lei 15.040/2024" });
+  assert.equal(v.status, "NAO_INDEXADO");
+});
+
+test("consultar_processo: vários números em paralelo, inválido com sugestão de DV", async () => {
+  let simultaneas = 0, pico = 0;
+  const lento = (async (url: string, init?: RequestInit) => {
+    simultaneas++; pico = Math.max(pico, simultaneas);
+    await new Promise((ok) => setTimeout(ok, 150));
+    simultaneas--;
+    const numero = JSON.parse(String(init?.body)).query.match.numeroProcesso as string;
+    return Response.json({ hits: { hits: numero.endsWith("0100") ? [{ _source: { numeroProcesso: numero, tribunal: "TJSP", grau: "G1", movimentos: [] } }] : [] } });
+  }) as typeof fetch;
+  const server = criarServidor(acervoBase(), { analista: null, fontes: [], fetchImpl: lento });
+  const [x, y] = InMemoryTransport.createLinkedPair();
+  await server.connect(x);
+  const client = new Client({ name: "teste", version: "1" });
+  await client.connect(y);
+  const inicio = Date.now();
+  const r = JSON.parse(((await client.callTool({ name: "consultar_processo", arguments: {
+    numeros_cnj: ["1008794-91.2017.8.26.0100", "0002491-43.2019.8.13.0303", "0001083-81.2016.8.05.0000"],
+  } })).content as { text: string }[])[0].text);
+  assert.equal(r.total, 3);
+  assert.deepEqual(r.resultados.map((x: { estado: string }) => x.estado), ["ENCONTRADO", "NAO_ENCONTRADO", "NUMERO_INVALIDO"]);
+  assert.match(r.resultados[2].observacao, /0001083-80\.2016\.8\.05\.0000/);
+  assert.ok(pico >= 2, "consultas simultâneas");
+  assert.ok(Date.now() - inicio < 1000);
+});

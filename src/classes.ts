@@ -15,7 +15,8 @@ export const CLASSES: Record<string, { nome: string; tribunais: ("STF" | "STJ")[
   RE: { nome: "Recurso Extraordinário", tribunais: ["STF"] },
   ARE: { nome: "Recurso Extraordinário com Agravo", tribunais: ["STF"] },
   AI: { nome: "Agravo de Instrumento", tribunais: ["STF"] },
-  AP: { nome: "Ação Penal", tribunais: ["STF"] },
+  // "AP" no STF; no STJ a mesma classe é "APn" (classeNoTribunal faz a troca na consulta)
+  AP: { nome: "Ação Penal", tribunais: ["STF", "STJ"] },
   ACO: { nome: "Ação Cível Originária", tribunais: ["STF"] },
   AO: { nome: "Ação Originária", tribunais: ["STF"] },
   AOE: { nome: "Ação Originária Especial", tribunais: ["STF"] },
@@ -114,6 +115,69 @@ const PROCESSO = new RegExp(
 );
 const TRIBUNAL_NO_TEXTO = /\b(STF|STJ|Supremo Tribunal Federal|Superior Tribunal de Justi[çc]a)\b/i;
 
+/** Nomes por extenso das classes e recursos (do mais longo ao mais curto) → sigla. */
+const POR_EXTENSO: [string, string][] = [
+  ["Proposta de Súmula Vinculante", "PSV"],
+  ["Embargos de Divergência em Agravo em Recurso Especial", "EAREsp"],
+  ["Embargos de Divergência em Recurso Especial", "EREsp"],
+  ["Ação Direta de Inconstitucionalidade por Omissão", "ADO"],
+  ["Ação Direta de Inconstitucionalidade", "ADI"],
+  ["Ação Declaratória de Constitucionalidade", "ADC"],
+  ["Arguição de Descumprimento de Preceito Fundamental", "ADPF"],
+  ["Pedido de Uniformização de Interpretação de Lei", "PUIL"],
+  ["Recurso Extraordinário com Agravo", "ARE"],
+  ["Recurso Ordinário em Habeas Corpus", "RHC"],
+  ["Recurso em Habeas Corpus", "RHC"],
+  ["Recurso Ordinário em Mandado de Segurança", "RMS"],
+  ["Recurso em Mandado de Segurança", "RMS"],
+  ["Agravo em Recurso Especial", "AREsp"],
+  ["Recurso Extraordinário", "RE"],
+  ["Recurso Especial", "REsp"],
+  ["Suspensão de Liminar e de Sentença", "SLS"],
+  ["Suspensão de Segurança", "SS"],
+  ["Conflito de Competência", "CC"],
+  ["Mandado de Segurança", "MS"],
+  ["Mandado de Injunção", "MI"],
+  ["Habeas Corpus", "HC"],
+  ["Ação Rescisória", "AR"],
+  ["Ação Penal", "AP"],
+  ["Queixa-Crime", "QC"],
+  ["Queixa Crime", "QC"],
+  ["Reclamação", "Rcl"],
+  ["Inquérito", "Inq"],
+  ["Petição", "Pet"],
+  ["Agravo Interno", "AgInt"],
+  ["Agravo Regimental", "AgRg"],
+  ["Embargos de Declaração", "EDcl"],
+];
+
+const VARIANTES: Record<string, string> = { a: "aáàâã", e: "eéê", i: "ií", o: "oóôõ", u: "uúü", c: "cç" };
+const padrao = (nome: string) =>
+  nome
+    .split(/\s+/)
+    .map((palavra) =>
+      [...palavra]
+        .map((ch) => {
+          const base = ch.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+          return VARIANTES[base] ? `[${VARIANTES[base]}]` : ch === "-" ? "[-\\s]?" : ch.toLowerCase();
+        })
+        .join(""),
+    )
+    .join("\\s+");
+const EXTENSO = POR_EXTENSO.map(([nome, sigla]) => ({ re: new RegExp(`(?<![\\p{L}])${padrao(nome)}(?![\\p{L}])`, "giu"), sigla }));
+
+/** Troca os nomes por extenso das classes pelas siglas: "Recurso Especial nº 1.864.620" → "REsp nº 1.864.620". */
+export function abreviarClasses(texto: string): string {
+  return EXTENSO.reduce((t, { re, sigla }) => t.replace(re, sigla), texto);
+}
+
+/** A mesma classe com siglas diferentes em cada tribunal (Ação Penal: AP no STF, APn no STJ). */
+export function classeNoTribunal(classe: string, tribunal: "STF" | "STJ"): string {
+  if (tribunal === "STJ" && classe === "AP") return "APn";
+  if (tribunal === "STF" && classe === "APn") return "AP";
+  return classe;
+}
+
 export interface ProcessoCitado {
   /** Classe base, ex.: "AREsp", "Inq", "ADI". */
   classe: string;
@@ -130,7 +194,8 @@ export interface ProcessoCitado {
   tribunais_possiveis: ("STF" | "STJ")[];
 }
 
-export function interpretarProcesso(texto: string): ProcessoCitado | null {
+export function interpretarProcesso(original: string): ProcessoCitado | null {
+  const texto = abreviarClasses(original);
   const m = texto.match(PROCESSO);
   if (!m) return null;
   const [, prefixos, classe, num, sufixos, uf] = m;

@@ -120,3 +120,40 @@ test("ementa e data do julgamento a partir do documento do STJ", () => {
   assert.match(e.ementa!, /^EMENTA ADMINISTRATIVO\. AÇÃO POPULAR\.$/);
   assert.equal(e.data_julgamento, "2007-10-04");
 });
+
+// --- STJ recusando o acesso ---------------------------------------------------------------------
+test("STJ recusa (403): pausa compartilhada, conferência no acervo local e indícios", async () => {
+  process.env.JURIS_STJ_INTERVALO_MS = "0";
+  const { Acervo } = await import("../src/db.js");
+  const a = new Acervo(":memory:");
+  const base = { registro: null, data_publicacao: null, situacao: null, tese: null, inteiro_teor: null, assuntos: null, fonte: "stj-espelhos", atualizado_em: "2026-01-01" };
+  a.salvar([
+    { ...base, id: "STJ-1", tribunal: "STJ", tipo: "acordao", classe: "EREsp", numero: "2042753", orgao: "CORTE ESPECIAL", relator: "MAURO CAMPBELL MARQUES",
+      data_julgamento: "2025-04-02", autoridade: "C", titulo: "EREsp 2042753", ementa: "EMBARGOS DE DIVERGÊNCIA. PRESCRIÇÃO.", referencias: null, fonte_url: "https://processo.stj.jus.br/x" },
+    { ...base, id: "STJ-2", tribunal: "STJ", tipo: "acordao", classe: "AgInt no REsp", numero: "2000001", orgao: "TERCEIRA TURMA", relator: "NANCY ANDRIGHI",
+      data_julgamento: "2025-05-02", autoridade: "D", titulo: "AgInt no REsp 2000001", ementa: "Aplicação do entendimento firmado no REsp 1.864.620/SP.", referencias: "REsp 1.864.620/SP", fonte_url: null },
+  ]);
+  let acessos = 0;
+  const recusa = (async () => { acessos++; return new Response("Forbidden", { status: 403 }); }) as unknown as typeof fetch;
+
+  const r = await localizarJulgado(a, "EREsp 2.042.753", { relator: "Mauro Campbell Marques", fetchImpl: recusa });
+  assert.equal(r.status, "CONFIRMADO");
+  assert.equal(r.conferido_em, "acervo_local");
+  assert.equal(r.fontes_consultadas[0].status, "acesso_recusado");
+  assert.ok(a.lerMeta("pausa_portal_STJ"), "pausa gravada na base");
+
+  const antes = acessos;
+  const r2 = await localizarJulgado(a, "REsp 1.864.620", { fetchImpl: recusa });
+  assert.equal(acessos, antes, "durante a pausa o portal não é acessado");
+  assert.equal(r2.fontes_consultadas[0].status, "pausado");
+  assert.equal(r2.status, "INDISPONIVEL", "nunca NAO_ENCONTRADO sem a fonte oficial");
+  assert.equal(r2.citado_em?.[0]?.id, "STJ-2", "julgado que cita o número entra como indício");
+});
+
+test("STJ: página sem os dados do processo é recusa, não inexistência", async () => {
+  process.env.JURIS_STJ_INTERVALO_MS = "0";
+  const desafio = (async () => new Response("<html><title>Just a moment...</title></html>")) as unknown as typeof fetch;
+  const r = await localizarJulgado(null, "REsp 1.792.271", { fetchImpl: desafio });
+  assert.equal(r.status, "INDISPONIVEL");
+  assert.equal(r.fontes_consultadas[0].status, "acesso_recusado");
+});

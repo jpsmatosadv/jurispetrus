@@ -22,6 +22,26 @@ interface Opcoes {
   formaCitada?: string;
 }
 
+/** O portal recusou o acesso (403/429, verificação anti-robô): não é prova de que o processo não existe. */
+export class AcessoRecusado extends Error {
+  constructor(
+    readonly status: number,
+    detalhe = `HTTP ${status}`,
+  ) {
+    super(`o portal do STJ recusou o acesso (${detalhe})`);
+  }
+}
+
+/** Intervalo mínimo entre acessos ao portal do STJ (página e documentos), para não disparar rajadas. */
+const intervaloMs = () => Number(process.env.JURIS_STJ_INTERVALO_MS ?? 1500);
+let proximoAcesso = 0;
+async function noRitmo(): Promise<void> {
+  const agora = Date.now();
+  const minha = Math.max(agora, proximoAcesso);
+  proximoAcesso = minha + intervaloMs();
+  if (minha > agora) await new Promise((ok) => setTimeout(ok, minha - agora));
+}
+
 const texto = (s: string | null | undefined) => (limparHtml(s ?? "") ?? "").replace(/\s+/g, " ").trim();
 
 interface BlocoDecisao {
@@ -64,12 +84,15 @@ function lerFases(pagina: string): { data: string; texto: string }[] {
 
 /** Página do documento: o PDF fica num iframe (ou no link de download). */
 async function textoDoAcordao(url: string, o: Opcoes): Promise<string> {
+  await noRitmo();
   const r = await buscarComRetentativa(url, { fetchImpl: o.fetchImpl, signal: o.signal, tentativas: 2 });
+  if ([401, 403, 429, 503].includes(r.status)) throw new AcessoRecusado(r.status);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const pagina = await lerTexto(r);
   const src = pagina.match(/<iframe[^>]+src='([^']+)'/)?.[1] ?? pagina.match(/href="([^"]+)"[^>]*>Clique aqui para fazer o/)?.[1];
   if (!src) return texto(pagina);
   // o documento só é servido a partir da página que o contém (Referer), como no navegador
+  await noRitmo();
   return textoDoDocumento(src.startsWith("http") ? src : BASE + src, o.fetchImpl, 40_000, { Referer: url });
 }
 
@@ -97,10 +120,15 @@ export async function consultarProcessoStj(classe: string, numero: string, o: Op
     relator: null, redator_acordao: null, relator_ultimo_incidente: null, orgao_julgador: null, autuacao: null, origem: null,
     assuntos: [], transito_em_julgado: null, ultima_fase: null, julgados: [], url, falhas: [], consultado_em: new Date().toISOString(),
   };
+  await noRitmo();
   const r = await buscarComRetentativa(url, { fetchImpl: o.fetchImpl, signal: o.signal, tentativas: 2 });
+  if ([401, 403, 429, 503].includes(r.status)) throw new AcessoRecusado(r.status);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const pagina = await lerTexto(r);
-  if (/Nenhum registro encontrado/i.test(pagina) || !/classSpanDetalhesLabel/.test(pagina)) return p;
+  // Só "Nenhum registro encontrado" prova que o processo não existe; outra página sem os dados
+  // do processo (verificação anti-robô, manutenção) é recusa de acesso, não inexistência.
+  if (/Nenhum registro encontrado/i.test(pagina)) return p;
+  if (!/classSpanDetalhesLabel/.test(pagina)) throw new AcessoRecusado(r.status, "o portal devolveu uma página sem os dados do processo");
 
   const campos = new Map<string, string>();
   for (const m of pagina.matchAll(/classSpanDetalhesLabel">([^<]*)<\/span>\s*<span class="classSpanDetalhesTexto">([\s\S]*?)<\/span>/g)) {

@@ -55,6 +55,10 @@ Para conferir um julgado do STF ou do STJ citado por classe e número (inclusive
 use verificar_citacao ou localizar_julgado: consultam as fontes oficiais ao vivo e separam mérito, cautelar, referendo,
 embargos e agravo. Em DIVERGENCIA, leia o motivo: as marcadas como explicáveis (redator do acórdão, data de publicação,
 fim da sessão virtual) não indicam erro na citação. INDISPONIVEL significa fonte fora do ar, não julgado inexistente.
+Se o portal recusar o acesso, a conferência é feita no acervo local (conferido_em: "acervo_local") e, sem o julgado
+no acervo, citado_em lista julgados que o citam (indício, não confirmação). Para vários números CNJ, use
+consultar_processo com numeros_cnj numa só chamada. Em legislação, NAO_INDEXADO e ARTIGO_NAO_ENCONTRADO significam
+que o dispositivo citado não foi achado naquela norma: nunca use o artigo de mesmo número de outra lei.
 
 Fluxo recomendado para um caso concreto: decomponha a narrativa em questões jurídicas e chame analisar_caso com elas;
 depois leia os julgados centrais com extrair_razao_decidir e confira os dispositivos com buscar_legislacao.
@@ -269,7 +273,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       const soNumero = proc && entrada.consulta.replace(/[^A-Za-zÀ-ú]/g, "").length <= proc.forma.replace(/[^A-Za-z]/g, "").length + 6;
       const localizacao =
         proc && soNumero && (proc.tribunal ?? proc.tribunais_possiveis[0]) && (entrada.pagina ?? 1) === 1
-          ? resumoLocalizacao(await localizarJulgado(acervo, proc, { fetchImpl: opts.fetchImpl }))
+          ? resumoLocalizacao(await localizarJulgado(acervo, proc, { ementas: 0, fetchImpl: opts.fetchImpl }))
           : undefined;
       const transparencia = {
         fontes_consultadas: [
@@ -514,7 +518,8 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       // STF e STJ: conferência ao vivo na fonte oficial (processos e controle concentrado)
       if (c?.processo && (c.processo.tribunal ? ["STF", "STJ"].includes(c.processo.tribunal) : c.processo.tribunais_possiveis.length)) {
         const local = c.tipo === "precedente" ? verificarCitacao(acervo, citacao) : null;
-        const r = await localizarJulgado(acervo, c.processo, { relator, data, fetchImpl: opts.fetchImpl });
+        // a conferência não precisa da ementa: sem PDFs, o portal do STJ recebe um acesso por julgado
+        const r = await localizarJulgado(acervo, c.processo, { relator, data, ementas: 0, fetchImpl: opts.fetchImpl });
         if (r.status === "INDISPONIVEL" && local?.status === "CONFIRMADO") {
           return ok({ ...local, aviso: "Fonte oficial indisponível agora: conferido só no acervo local.", fontes_consultadas: r.fontes_consultadas });
         }
@@ -525,13 +530,13 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       if (r.status === "NAO_RECONHECIDA") {
         const legal = interpretarCitacaoLegal(citacao);
         if (legal) {
-          await garantirNorma(legal);
+          const importacao = await garantirNorma(legal);
           const d = dispositivoCitado(legal);
-          return ok(
-            d
-              ? { status: d.revogado ? "REVOGADO" : "VIGENTE", dispositivo: d }
-              : { status: "NAO_INDEXADO", citacao: legal, observacao: "A norma ou o artigo não está no índice de legislação consolidada." },
-          );
+          if (!d) {
+            const { estado, ...resto } = naoEncontradoNaNorma(legal, importacao);
+            return ok({ status: estado, ...resto });
+          }
+          return ok({ status: d.revogado ? "REVOGADO" : "VIGENTE", dispositivo: d, aviso: d.aviso_texto });
         }
         const incompleto = numeroIncompleto(citacao);
         if (incompleto) return ok(await verificarCnjIncompleto(incompleto, extra));
@@ -560,7 +565,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         tribunal: z.enum(["STF", "STJ"]).optional().describe("Tribunal, quando a citação não o indica"),
         relator: z.string().optional().describe("Relator atribuído na citação, para conferência"),
         data: z.string().optional().describe("Data atribuída ao julgado, para conferência"),
-        ementas: z.number().int().min(0).max(10).optional().describe("STJ: quantos acórdãos ter a ementa lida do PDF (padrão 3)"),
+        ementas: z.number().int().min(0).max(10).optional().describe("STJ: quantos acórdãos ter a ementa lida do PDF (padrão 1, o citado; cada um é um acesso a mais ao portal)"),
         atualizar: z.boolean().optional().describe("Ignora a consulta guardada (24 h) e consulta de novo"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -570,7 +575,7 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       if (!p) return ok({ status: "NAO_RECONHECIDA", observacao: "Não identifiquei classe e número de processo do STF ou do STJ." });
       const alvo = tribunal ? { ...p, tribunal, tribunais_possiveis: [tribunal] } : p;
       if (alvo.tribunal && !["STF", "STJ"].includes(alvo.tribunal)) return ok({ status: "NAO_RECONHECIDA", observacao: "Só STF e STJ." });
-      const r = await localizarJulgado(acervo, alvo, { relator, data, ementas, atualizar, fetchImpl: opts.fetchImpl });
+      const r = await localizarJulgado(acervo, alvo, { relator, data, ementas: ementas ?? 1, atualizar, fetchImpl: opts.fetchImpl });
       const resumo = resumoLocalizacao(r);
       return ok({
         ...resumo,
@@ -585,7 +590,9 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     status: r.status,
     citacao: r.citacao?.forma,
     tribunal: r.citacao?.tribunal,
+    conferido_em: r.conferido_em,
     observacao: r.observacao,
+    citado_em: r.citado_em,
     julgado_citado: r.julgado_citado,
     divergencias: r.divergencias.length ? r.divergencias : undefined,
     processos: r.processos.map((p) => ({
@@ -612,7 +619,8 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
   const verificarCnj = async (numero: string, extra?: ExtraFerramenta) => {
     const consulta = async (n: string) => {
       try {
-        const r = await processoDataJud(n, 0, extra);
+        // para conferir a existência, um processo achado nos últimos 30 dias não precisa de nova consulta
+        const r = await processoDataJud(n, 0, extra, 30 * 24 * 60 * 60 * 1000);
         return { encontrado: r.processos.length > 0, processos: r.processos.map(({ movimentos, ...p }) => p), indice: r.alias, consultado_em: r.consultado_em };
       } catch (e) {
         return { encontrado: null, erro: (e as Error).message };
@@ -692,24 +700,64 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
         "Consulta metadados e movimentações de um processo pelo número CNJ (NNNNNNN-DD.AAAA.J.TR.OOOO) na API pública do DataJud. " +
         "Não retorna peças nem inteiro teor; processos sigilosos podem não aparecer. " +
         "ATENÇÃO: o DataJud do CNJ é lento (costuma levar de 20 a 60 s, às vezes até 90 s); a demora é normal, não é erro. " +
-        "Se a chamada expirar, repita-a depois: a consulta segue em segundo plano e o processo fica guardado por 6 horas.",
+        "Se a chamada expirar, repita-a depois: a consulta segue em segundo plano e o processo fica guardado por 6 horas. " +
+        "Para vários processos, envie todos em numeros_cnj numa só chamada: são consultados em paralelo.",
       inputSchema: {
-        numero_cnj: z.string().describe("Número único do processo (com ou sem pontuação)"),
+        numero_cnj: z.string().optional().describe("Número único do processo (com ou sem pontuação)"),
+        numeros_cnj: z
+          .array(z.string())
+          .max(20)
+          .optional()
+          .describe("Vários números de uma vez (até 20): consultados em paralelo, levam mais ou menos o tempo de uma consulta"),
         max_movimentos: z.number().int().min(0).max(200).optional().describe("Movimentações mais recentes a retornar (padrão 30)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    protegido("consultar_processo", async ({ numero_cnj, max_movimentos }, extra: ExtraFerramenta) => {
-      if (!cnjValido(numero_cnj)) return erro("Número CNJ inválido (20 dígitos com dígito verificador correto).");
-      const r = await processoDataJud(numero_cnj, max_movimentos ?? 30, extra);
-      if (!r.processos.length) return ok({ estado: "NAO_ENCONTRADO", indice: r.alias, consultado_em: r.consultado_em });
-      return ok({
-        estado: "ENCONTRADO",
-        fonte: "DataJud/CNJ",
-        consultado_em: r.consultado_em,
-        ...(r.do_cache ? { observacao: "Dados guardados de uma consulta recente ao DataJud (até 6 horas)." } : {}),
-        processos: r.processos,
-      });
+    protegido("consultar_processo", async ({ numero_cnj, numeros_cnj, max_movimentos }, extra: ExtraFerramenta) => {
+      const numeros = [...new Set([numero_cnj, ...(numeros_cnj ?? [])].filter((n): n is string => !!n?.trim()))];
+      if (!numeros.length) return erro("Informe numero_cnj ou numeros_cnj.");
+      const um = async (numero: string) => {
+        if (!cnjValido(numero)) {
+          const corrigido = corrigirDv(numero);
+          return {
+            numero,
+            estado: "NUMERO_INVALIDO",
+            observacao: corrigido
+              ? `O dígito verificador não confere; com os demais dígitos como estão, seria ${formatarCnj(corrigido)} (sugestão, confira nos autos).`
+              : "Número CNJ inválido (precisa de 20 dígitos).",
+          };
+        }
+        try {
+          const r = await processoDataJud(numero, max_movimentos ?? 30, numeros.length === 1 ? extra : undefined);
+          return r.processos.length
+            ? {
+                numero: formatarCnj(numero),
+                estado: "ENCONTRADO",
+                consultado_em: r.consultado_em,
+                ...(r.do_cache ? { observacao: "Dados guardados de uma consulta recente ao DataJud (até 6 horas)." } : {}),
+                processos: r.processos,
+              }
+            : { numero: formatarCnj(numero), estado: "NAO_ENCONTRADO", indice: r.alias, consultado_em: r.consultado_em };
+        } catch (e) {
+          return { numero: formatarCnj(numero), estado: "INDISPONIVEL", observacao: `DataJud não respondeu: ${(e as Error).message}. Não afirme que o processo não existe.` };
+        }
+      };
+      if (numeros.length === 1) {
+        const r = await um(numeros[0]);
+        return r.estado === "NUMERO_INVALIDO" ? erro(r.observacao!) : ok({ fonte: "DataJud/CNJ", ...r });
+      }
+      // até 5 consultas simultâneas: o tempo total fica perto do de uma consulta lenta
+      const resultados: Awaited<ReturnType<typeof um>>[] = new Array(numeros.length);
+      let proximo = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(5, numeros.length) }, async () => {
+          while (proximo < numeros.length) {
+            const i = proximo++;
+            resultados[i] = await um(numeros[i]);
+          }
+        }),
+      );
+      return ok({ fonte: "DataJud/CNJ", total: numeros.length, resultados });
     }),
   );
 
@@ -722,12 +770,15 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     cnj: string,
     maxMovimentos: number,
     extra?: ExtraFerramenta,
+    /** Validade do que está guardado; para só confirmar a existência, uma consulta antiga basta. */
+    validadeMs = CACHE_DATAJUD_MS,
   ): Promise<{ alias: string; processos: ProcessoDataJud[]; consultado_em: string; do_cache: boolean }> => {
     const numero = cnj.replace(/\D/g, "");
     const chaveCache = `datajud:${numero}`;
     const recortar = (ps: ProcessoDataJud[]) => ps.map((p) => ({ ...p, movimentos: p.movimentos.slice(0, maxMovimentos) }));
     const guardado = acervo.lerAnalise<{ alias: string; processos: ProcessoDataJud[] }>(chaveCache, "processo");
-    if (guardado && Date.now() - Date.parse(guardado.criado_em) < CACHE_DATAJUD_MS) {
+    const validade = guardado?.conteudo.processos.length ? validadeMs : Math.min(validadeMs, CACHE_DATAJUD_MS);
+    if (guardado && Date.now() - Date.parse(guardado.criado_em) < validade) {
       return { alias: guardado.conteudo.alias, processos: recortar(guardado.conteudo.processos), consultado_em: guardado.criado_em, do_cache: true };
     }
     let tarefa = consultasDataJud.get(numero);
@@ -792,11 +843,32 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
     }
   };
 
+  /** Resposta para citação legal exata que não foi achada (norma fora do índice ou artigo inexistente). */
+  const naoEncontradoNaNorma = (c: CitacaoLegal, importacao?: string) => {
+    const indexada = normaIndexada(acervo, c.norma);
+    const nome = c.avulsa?.nome ?? CATALOGO.find((x) => x.sigla === c.norma)?.nome ?? c.norma;
+    return {
+      estado: indexada ? "ARTIGO_NAO_ENCONTRADO" : "NAO_INDEXADO",
+      citacao: { norma: nome, artigo: c.artigo },
+      mensagem: indexada
+        ? `${nome} está no índice, mas não tem o art. ${c.artigo}. Confira o número do artigo.`
+        : `${nome} não está no índice de legislação consolidada${importacao ? ` (${importacao})` : ""}. ` +
+          "Não use artigo de outra norma com o mesmo número; confira o texto no Planalto (https://www.planalto.gov.br/legislacao).",
+      importacao,
+    };
+  };
+
   /** Dispositivo exato + vizinhos, para citações como "art. 14 do CDC". */
   const dispositivoCitado = (c: CitacaoLegal) => {
     const d = obterDispositivo(acervo, c.norma, c.artigo);
     if (!d) return null;
+    const fonte = (acervo.db.prepare("SELECT fonte FROM normas WHERE sigla = ?").get(d.norma) as { fonte: string } | undefined)?.fonte;
     return {
+      fonte_do_texto: fonte,
+      aviso_texto:
+        fonte === "camara-publicacao-original"
+          ? "Texto da publicação original: não inclui alterações posteriores. Confira a redação vigente no Planalto antes de citar."
+          : undefined,
       id: d.id,
       norma: d.norma,
       norma_nome: d.norma_nome,
@@ -832,16 +904,16 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
       const importacao = citacao ? await garantirNorma(citacao) : undefined;
       if (citacao) {
         const d = dispositivoCitado(citacao);
-        if (d) {
-          const doc = obterDispositivo(acervo, citacao.norma, citacao.artigo)!;
-          return ok({
-            estado: "ENCONTRADO",
-            dispositivo: d,
-            contexto: vizinhos(acervo, doc).map((v) => ({ rotulo: v.rotulo, texto: v.texto.slice(0, 600), revogado: !!v.revogado })),
-            aviso: d.revogado ? "Dispositivo revogado: não o cite como direito vigente." : undefined,
-            importacao,
-          });
-        }
+        // Citação exata que não está no índice: nunca devolver o artigo de mesmo número de outra norma.
+        if (!d) return ok(naoEncontradoNaNorma(citacao, importacao));
+        const doc = obterDispositivo(acervo, citacao.norma, citacao.artigo)!;
+        return ok({
+          estado: "ENCONTRADO",
+          dispositivo: d,
+          contexto: vizinhos(acervo, doc).map((v) => ({ rotulo: v.rotulo, texto: v.texto.slice(0, 600), revogado: !!v.revogado })),
+          aviso: [d.revogado ? "Dispositivo revogado: não o cite como direito vigente." : undefined, d.aviso_texto].filter(Boolean).join(" ") || undefined,
+          importacao,
+        });
       }
       const resultados = pesquisarDispositivos(acervo, consulta, {
         normas,
@@ -858,16 +930,15 @@ export function criarServidor(acervo: Acervo, opts: OpcoesServidor = {}): McpSer
           estado: sigen.normas.length ? "NORMAS_ENCONTRADAS" : "SEM_RESULTADO",
           fonte: "Catálogo de legislação do Senado (identificação da norma)",
           ...sigen,
-          importacao,
           orientacao:
             "O texto destas normas ainda não está no índice. Para ler um artigo, chame buscar_legislacao com a citação " +
             "completa (ex.: 'art. 3º da Lei 13.146/2015'): a norma é importada do texto consolidado.",
         });
       } catch (e) {
         return ok({
-          estado: citacao ? "NAO_INDEXADO" : "SEM_RESULTADO",
+          estado: "SEM_RESULTADO",
           mensagem:
-            `Nada encontrado no índice de legislação consolidada${citacao ? ` para ${citacao.norma}, art. ${citacao.artigo}` : ""}. ` +
+            "Nada encontrado no índice de legislação consolidada. " +
             "Não invente o texto do dispositivo; oriente o usuário a conferir no Planalto (https://www.planalto.gov.br/legislacao).",
         });
       }

@@ -1,6 +1,6 @@
 import type { Acervo, Documento } from "./db.js";
 import { identificacao } from "./search.js";
-import { interpretarProcesso, type ProcessoCitado } from "./classes.js";
+import { abreviarClasses, interpretarProcesso, type ProcessoCitado } from "./classes.js";
 
 export interface CitacaoInterpretada {
   tipo: "precedente" | "processo" | "cnj";
@@ -23,7 +23,9 @@ const INCIDENTE = new RegExp(String.raw`\b(IRDR|IAC|SIRDR|PUIL|IRR|OJ)\s*${NUM}$
 const digitos = (s: string) => s.replace(/\D/g, "");
 const sigla = (s?: string) => s?.toUpperCase().replace(/\s+/g, "");
 
-export function interpretarCitacao(texto: string): CitacaoInterpretada | null {
+export function interpretarCitacao(original: string): CitacaoInterpretada | null {
+  // "Proposta de Súmula Vinculante 60" vira "PSV 60" antes de tudo: não pode ser lida como a SV 60
+  const texto = abreviarClasses(original);
   const cnj = texto.match(CNJ);
   if (cnj) return { tipo: "cnj", numero: cnj.slice(1, 7).join("") };
 

@@ -153,7 +153,7 @@ export function lerNormaEstruturada(json: No, fonteUrl: string): DispositivoNovo
 // ---------- download ----------
 
 export interface ResultadoDownload {
-  fonte: "camara-norma-atualizada" | "normas.leg.br";
+  fonte: "camara-norma-atualizada" | "normas.leg.br" | "camara-publicacao-original";
   fonte_url: string;
   dispositivos: DispositivoNovo[];
   versao?: string;
@@ -179,6 +179,40 @@ export async function baixarDaCamara(caminho: string, opts: { pararEm?: RegExp; 
   const dispositivos = lerNormaAtualizadaCamara(html, url, { pararEm: opts.pararEm });
   if (dispositivos.length < 3) throw new Error(`Nenhum artigo reconhecido em ${origem}`);
   return { fonte: "camara-norma-atualizada", fonte_url: url, dispositivos };
+}
+
+/**
+ * As publicações originais da Câmara usam o formato antigo (texto em <div class="texto">,
+ * linhas separadas por <BR> e títulos em <CENTER>): converte em parágrafos <p> para o leitor.
+ */
+export function paragrafosDoTextoAntigo(html: string): string {
+  const ini = html.search(/<div class="texto">/i);
+  const corpo = ini >= 0 ? html.slice(ini) : html;
+  return corpo
+    .replace(/<\/?center>/gi, "<br>")
+    .split(/(?:<br\s*\/?>\s*)+/i)
+    .map((linha) => linha.replace(/<\/?(?:div|strong|b)\b[^>]*>/gi, "").trim())
+    .filter((linha) => linha.replace(/&nbsp;|\s/g, ""))
+    .map((linha) => `<p>${linha}</p>`)
+    .join("\n");
+}
+
+/**
+ * Último recurso para leis recentes, ainda sem texto atualizado: a publicação original, achada
+ * pelo link na ficha da norma na Câmara. Não traz alterações posteriores à publicação.
+ */
+export async function baixarPublicacaoOriginalCamara(caminhoAtualizada: string, fetchImpl: typeof fetch = fetch): Promise<ResultadoDownload> {
+  const ficha = `${CAMARA}/${caminhoAtualizada.replace("-normaatualizada-", "-norma-")}.html`;
+  const r = await buscarComRetentativa(ficha, { fetchImpl, signal: AbortSignal.timeout(120_000) });
+  if (!r.ok) throw new Error(`Ficha da norma na Câmara respondeu HTTP ${r.status}`);
+  const link = (await lerTexto(r)).match(/href="([^"]*-publicacaooriginal-\d+-p[le]\.html)"/)?.[1];
+  if (!link) throw new Error("A ficha da norma na Câmara não tem link para a publicação original");
+  const url = new URL(link, ficha).toString();
+  const rt = await buscarComRetentativa(url, { fetchImpl, signal: AbortSignal.timeout(120_000) });
+  if (!rt.ok) throw new Error(`Publicação original na Câmara respondeu HTTP ${rt.status}`);
+  const dispositivos = lerNormaAtualizadaCamara(paragrafosDoTextoAntigo(await lerTexto(rt)), url);
+  if (dispositivos.length < 3) throw new Error(`Nenhum artigo reconhecido na publicação original (${url})`);
+  return { fonte: "camara-publicacao-original", fonte_url: url, dispositivos };
 }
 
 export async function baixarDoNormasLeg(urn: string, fetchImpl: typeof fetch = fetch): Promise<ResultadoDownload> {

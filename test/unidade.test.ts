@@ -136,6 +136,15 @@ test("classes processuais: originárias, compostas e no estilo do STF", () => {
     assert.equal(c?.processo?.tribunal, tribunal, texto);
   }
   assert.equal(interpretarCitacao("ADI 5.022 AgR")?.tipo, "processo", "recurso na ADI não é o precedente de mérito");
+  // nomes por extenso
+  const psv = interpretarCitacao("Proposta de Súmula Vinculante nº 60");
+  assert.equal(psv?.processo?.classe, "PSV", "PSV não pode virar a Súmula Vinculante 60");
+  assert.equal(interpretarCitacao("Súmula Vinculante 13")?.classe, "SV");
+  assert.equal(interpretarCitacao("Recurso Especial nº 1.864.620/RS")?.processo?.forma, "REsp 1864620");
+  assert.equal(interpretarCitacao("Embargos de Divergência em Recurso Especial 2.042.753")?.processo?.classe, "EREsp");
+  assert.equal(interpretarCitacao("Agravo Interno no Agravo em Recurso Especial 2.554.624")?.processo?.forma, "AgInt no AREsp 2554624");
+  assert.equal(interpretarCitacao("Queixa-Crime nº 2")?.processo?.tribunal, "STJ");
+  assert.deepEqual(interpretarCitacao("Ação Penal 971")?.processo?.tribunais_possiveis, ["STF", "STJ"]);
 });
 
 test("verificarCitacao confirma, diverge e não encontra", () => {

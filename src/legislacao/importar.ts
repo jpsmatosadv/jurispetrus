@@ -2,7 +2,7 @@
 import type { Acervo } from "../db.js";
 import { buscarComRetentativa, lerTexto } from "../fontes/tipos.js";
 import { CAMINHOS_CAMARA, CATALOGO, type NormaCatalogo } from "./catalogo.js";
-import { baixarDaCamara, baixarDoNormasLeg, pesquisarSigen, type ResultadoDownload } from "./fontes.js";
+import { baixarDaCamara, baixarDoNormasLeg, baixarPublicacaoOriginalCamara, pesquisarSigen, type ResultadoDownload } from "./fontes.js";
 import { salvarNorma } from "./indice.js";
 
 const TIPO_BUSCA_CAMARA: Record<string, string> = {
@@ -36,8 +36,9 @@ export async function importarNorma(
 ): Promise<{ fonte: string; dispositivos: number; revogados: number }> {
   const erros: string[] = [];
   let r: ResultadoDownload | null = null;
+  let caminho: string | null = null;
   try {
-    const caminho = await descobrirCaminhoCamara(n, opts.fetchImpl);
+    caminho = await descobrirCaminhoCamara(n, opts.fetchImpl);
     // na página da CF vem também o ADCT, que é importado separadamente
     r = await baixarDaCamara(caminho, { fetchImpl: opts.fetchImpl, pararEm: n.sigla === "CF" ? /^ATO DAS DISPOSI[ÇC][ÕO]ES CONSTITUCIONAIS TRANSIT[ÓO]RIAS/i : undefined });
   } catch (e) {
@@ -57,6 +58,14 @@ export async function importarNorma(
   if (!r && urn) {
     try {
       r = await baixarDoNormasLeg(urn, opts.fetchImpl);
+    } catch (e) {
+      erros.push((e as Error).message);
+    }
+  }
+  if (!r && caminho) {
+    // lei recente, ainda sem texto atualizado em nenhuma das fontes: publicação original
+    try {
+      r = await baixarPublicacaoOriginalCamara(caminho, opts.fetchImpl);
     } catch (e) {
       erros.push((e as Error).message);
     }

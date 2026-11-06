@@ -291,6 +291,14 @@ src/
 - Os portais que exigem captcha ou desafio anti-robô não são contornados. Para cobri-los, só com convênio ou API oficial.
 - No TJSP e no TJRJ, a pesquisa alcança só os processos do eproc; o acervo antigo do e-SAJ e do ejuris fica de fora.
 - No pacote do Mac, a base é atualizada sozinha uma vez por semana, em segundo plano (legislação, STF, STJ, TST e BNP).
+- Portal do STJ: a consulta processual fica atrás de uma proteção anti-robô que às vezes recusa o acesso (HTTP 403).
+  O JurisPetrus espaça os acessos (1,5 s), não baixa PDFs na conferência de citação, guarda por 90 dias a consulta
+  de processo transitado em julgado e, depois de uma recusa, pausa as consultas ao portal por 20 minutos (em todas as
+  cópias do servidor). Enquanto isso, confere no acervo local (`conferido_em: "acervo_local"`) e, sem o julgado lá,
+  aponta outros julgados que o citam (`citado_em`). A proteção não é contornada.
+- Legislação: citação exata (ex.: "art. 2º da Lei 15.040/2024") nunca cai na busca livre; se a norma ou o artigo não
+  estiver no índice, a resposta é `NAO_INDEXADO` ou `ARTIGO_NAO_ENCONTRADO`. Leis recentes ainda sem texto atualizado
+  na Câmara e no normas.leg.br vêm da publicação original (com aviso: não inclui alterações posteriores).
 - Memória: sem a busca semântica, cada cópia do servidor usa ~85 MB. O modelo local ocupa ~430 MB enquanto está
   carregado e sai da memória 3 minutos depois do último uso; a vetorização em segundo plano chega a ~650 MB enquanto
   roda. O Claude Desktop pode abrir mais de uma cópia do servidor (chat, Cowork, Claude Code).
